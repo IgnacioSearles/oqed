@@ -1,0 +1,7 @@
+function = "clamp_s16"
+category = "clip"
+args = ["i32"]
+ret = "i16"
+loop_free = true
+source = "saturating clamp (cf. FFmpeg av_clip_int16)"
+license = "original"

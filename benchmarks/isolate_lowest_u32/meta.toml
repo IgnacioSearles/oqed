@@ -1,0 +1,7 @@
+function = "isolate_lowest_u32"
+category = "bits"
+args = ["u32"]
+ret = "u32"
+loop_free = true
+source = "Hacker's Delight 2-1"
+license = "original"

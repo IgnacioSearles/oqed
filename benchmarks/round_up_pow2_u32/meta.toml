@@ -1,0 +1,7 @@
+function = "round_up_pow2_u32"
+category = "bits"
+args = ["u32"]
+ret = "u32"
+loop_free = true
+source = "Hacker's Delight 3-2"
+license = "original"

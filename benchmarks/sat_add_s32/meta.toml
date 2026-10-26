@@ -1,0 +1,7 @@
+function = "sat_add_s32"
+category = "clip"
+args = ["i32", "i32"]
+ret = "i32"
+loop_free = true
+source = "saturating add (cf. FFmpeg av_sat_add32)"
+license = "original"

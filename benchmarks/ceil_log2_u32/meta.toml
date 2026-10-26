@@ -1,0 +1,7 @@
+function = "ceil_log2_u32"
+category = "bits"
+args = ["u32"]
+ret = "i32"
+loop_free = true
+source = "ceil(log2(x)) for x >= 1 (cf. FFmpeg av_ceil_log2)"
+license = "original"

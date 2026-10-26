@@ -1,0 +1,7 @@
+function = "clz_smear_u32"
+category = "bits"
+args = ["u32"]
+ret = "i32"
+loop_free = true
+source = "Hacker's Delight 5-3 (smear + popcount)"
+license = "original"

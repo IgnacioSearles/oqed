@@ -1,0 +1,7 @@
+function = "floor_log2_smear_u32"
+category = "bits"
+args = ["u32"]
+ret = "i32"
+loop_free = true
+source = "Hacker's Delight 11-4 (smear + popcount, x >= 1)"
+license = "original"

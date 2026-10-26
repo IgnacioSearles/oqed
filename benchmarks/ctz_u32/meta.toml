@@ -1,0 +1,7 @@
+function = "ctz_u32"
+category = "bits"
+args = ["u32"]
+ret = "i32"
+loop_free = true
+source = "Hacker's Delight 5-4"
+license = "original"

@@ -1,0 +1,7 @@
+function = "xxh32_avalanche"
+category = "hash"
+args = ["u32"]
+ret = "u32"
+loop_free = true
+source = "xxHash XXH32_avalanche constants (algorithm by Yann Collet)"
+license = "original"

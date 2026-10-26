@@ -1,0 +1,7 @@
+function = "avg_floor_u32"
+category = "bits"
+args = ["u32", "u32"]
+ret = "u32"
+loop_free = true
+source = "Hacker's Delight 2-5"
+license = "original"

@@ -1,0 +1,7 @@
+function = "xxh64_avalanche"
+category = "hash"
+args = ["u64"]
+ret = "u64"
+loop_free = true
+source = "xxHash XXH64_avalanche constants (algorithm by Yann Collet)"
+license = "original"

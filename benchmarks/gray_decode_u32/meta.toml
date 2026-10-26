@@ -1,0 +1,7 @@
+function = "gray_decode_u32"
+category = "bits"
+args = ["u32"]
+ret = "u32"
+loop_free = true
+source = "Hacker's Delight 13-1 (prefix xor)"
+license = "original"

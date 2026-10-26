@@ -1,0 +1,7 @@
+function = "fmix32"
+category = "hash"
+args = ["u32"]
+ret = "u32"
+loop_free = true
+source = "MurmurHash3 fmix32 by Austin Appleby"
+license = "public-domain"

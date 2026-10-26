@@ -1,0 +1,7 @@
+function = "mulhi_u32_portable"
+category = "bits"
+args = ["u32", "u32"]
+ret = "u32"
+loop_free = true
+source = "Hacker's Delight 8-2 (high product from 16-bit halves)"
+license = "original"

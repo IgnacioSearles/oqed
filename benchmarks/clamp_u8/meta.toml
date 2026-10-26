@@ -1,0 +1,7 @@
+function = "clamp_u8"
+category = "clip"
+args = ["i32"]
+ret = "u8"
+loop_free = true
+source = "saturating clamp (cf. FFmpeg av_clip_uint8)"
+license = "original"

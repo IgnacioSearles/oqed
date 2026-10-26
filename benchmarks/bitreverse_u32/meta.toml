@@ -1,0 +1,7 @@
+function = "bitreverse_u32"
+category = "bits"
+args = ["u32"]
+ret = "u32"
+loop_free = true
+source = "Hacker's Delight 7-1 (SWAR swaps)"
+license = "original"

@@ -1,0 +1,7 @@
+function = "fmix64"
+category = "hash"
+args = ["u64"]
+ret = "u64"
+loop_free = true
+source = "MurmurHash3 fmix64 by Austin Appleby"
+license = "public-domain"

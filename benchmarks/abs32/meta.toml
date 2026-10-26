@@ -1,0 +1,7 @@
+function = "abs32"
+category = "bits"
+args = ["i32"]
+ret = "i32"
+loop_free = true
+source = "Hacker's Delight 2-4"
+license = "original"
