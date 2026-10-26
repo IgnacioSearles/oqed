@@ -1,0 +1,14 @@
+specs/
+.env
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+target/
+node_modules/
+dist/
+
+# Run logs are local; curated demo runs live in runs/demo/ and are committed.
+runs/*
+!runs/demo/

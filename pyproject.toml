@@ -1,0 +1,33 @@
+[project]
+name = "oqed"
+version = "0.1.0"
+description = "LLM-guided x86-64 superoptimizer with formal equivalence proofs"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "angr>=10.0.5",
+    "iced-x86>=1.21.0",
+    "pydantic>=2.14.1",
+    "pyelftools>=0.33",
+    "typer>=0.27.3",
+    "z3-solver>=5.3.1.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
+
+[project.scripts]
+oqed = "oqed.cli:main"
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "PIE", "PLW1510"]
+ignore = ["B008"]  # typer declares CLI arguments in defaults
