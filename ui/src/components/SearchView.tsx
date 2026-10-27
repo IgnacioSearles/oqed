@@ -23,11 +23,11 @@ export function SearchView({
     <div className="space-y-1.5">
       <Playback replay={replay} live={live} />
       <div className="grid items-start gap-1.5 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <Funnel fn={fn} />
         <div className="min-w-0 space-y-1.5">
-          <Funnel fn={fn} />
+          <ProgressChart fn={fn} full={full} />
           <Usage fn={fn} />
         </div>
-        <ProgressChart fn={fn} full={full} />
       </div>
       <CandidateFeed fn={fn} />
     </div>
