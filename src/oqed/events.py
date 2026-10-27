@@ -63,6 +63,7 @@ class CandidateProposed(_Event):
     model_ms: float | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
+    cost_usd: float | None = None  # list-price estimate; None when the price is unknown
 
 
 class CandidateRejected(_Event):
@@ -106,10 +107,11 @@ class SearchStalled(_Event):
     rounds_without_improvement: int
 
 
-class SearchConverged(_Event):
-    """The search for this function stopped before its candidate budget."""
+class SearchStopped(_Event):
+    """The search for this function stopped before its candidate budget:
+    it converged, or the run hit its spending cap."""
 
-    type: Literal["search_converged"] = "search_converged"
+    type: Literal["search_stopped"] = "search_stopped"
     function_id: str
     reason: str
     candidates: int  # proposed when it stopped
@@ -130,11 +132,13 @@ class FunctionSummary(BaseModel):
     speedup_vs_clang: float | None
     speedup_vs_gcc: float | None
     candidates: int
+    cost_usd: float | None = None
 
 
 class RunFinished(_Event):
     type: Literal["run_finished"] = "run_finished"
     summary: dict[str, FunctionSummary]
+    cost_usd: float | None = None  # model spend for the whole run (list-price estimate)
 
 
 Event = Annotated[
@@ -146,7 +150,7 @@ Event = Annotated[
     | CandidateBenchmarked
     | NewBest
     | SearchStalled
-    | SearchConverged
+    | SearchStopped
     | TimingBreakdown
     | RunFinished,
     Field(discriminator="type"),

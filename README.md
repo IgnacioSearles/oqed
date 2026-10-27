@@ -24,7 +24,7 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 ```
 
 - **Models:** `muse-spark-1.3` ([Meta Model API](https://dev.meta.ai/docs/overview)) generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history and the best candidate's bottleneck report when progress stalls. Muse Spark Open (`meta-models/muse-spark-open-1026` on [Baseten](https://docs.baseten.co)) can run the volume tier instead.
-- **Search:** each volume-tier call mutates one parent, drawn from the fastest candidates that beat `-O3` (or, before any do, the correct ones that came closest), and sees a one-line log of every idea already tried. Duplicates are caught on text and on machine code. A function stops early once the reasoning tier has failed to improve it twice (`--reasoning-attempts`).
+- **Search:** each volume-tier call mutates one parent, drawn from the fastest candidates that beat `-O3` (or, before any do, the correct ones that came closest), and sees a one-line log of every idea already tried. Duplicates are caught on text and on machine code. A function stops early once the reasoning tier has failed to improve it twice (`--reasoning-attempts`). Every run has a spending cap (`--max-usd`, default $1, list-price estimate from token counts) and logs its model spend.
 - **Correctness first:** "proven equivalent" is claimed only when symbolic execution (angr/VEX) plus Z3 shows the candidate matches the reference for every ABI-valid input: return value at its width, callee-saved registers and stack pointer. Loops, non-stack memory, instructions with undefined results (`bsf`/`bsr` on zero) and solver timeouts give "unknown", shown as **tested, not proven**. SMT counterexamples are replayed on the CPU. `tests/test_verify.py` holds a suite of deliberately wrong rewrites (wrapping shift counts, reading undefined upper register bits, off-by-one, wrong flag, wrong sign extension, clobbered `rbx`, unbalanced stack, a bug on a single input that random testing misses, ...), and none may be proven.
 - **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
 - **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
@@ -38,7 +38,8 @@ Requires Linux x86-64, [uv](https://docs.astral.sh/uv/), a Rust toolchain, clang
 uv sync
 cp .env.example .env              # add MODEL_API_KEY (and BASETEN_API_KEY for Muse Spark Open)
 
-uv run oqed search round_up_pow2_u32      # model-guided search, events in runs/<id>.jsonl
+uv run oqed search round_up_pow2_u32      # model-guided search (cheap contributor Spark, $1 cap), events in runs/<id>.jsonl
+uv run oqed search clz_smear_u32 --volume spark --max-usd 5   # standard Spark, for demo runs
 uv run oqed search parity_u32 --volume spark-open
 uv run oqed try round_up_pow2_u32 my.s    # check a hand-written candidate
 uv run oqed baseline round_up_pow2_u32    # clang/gcc output + llvm-mca estimates

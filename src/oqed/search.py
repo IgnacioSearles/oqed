@@ -37,8 +37,8 @@ from .events import (
     RejectStage,
     RunFinished,
     RunStarted,
-    SearchConverged,
     SearchStalled,
+    SearchStopped,
     TimingBreakdown,
 )
 from .isa import forbidden_instructions, isa_violations
@@ -72,6 +72,7 @@ class SearchConfig:
     min_gain: float = 0.02  # a candidate must be at least 2% faster than the bar it has to beat
     verifier_workers: int = 4
     seed: int = 0  # parent selection
+    max_usd: float | None = None  # stop the run once model spend reaches this
     march: str = DEFAULT_MARCH
     mcpu: str = DEFAULT_MCPU
 
@@ -120,6 +121,27 @@ class _Member:
 
 
 @dataclass
+class Budget:
+    """Model spend across the whole run. Calls already in flight when the cap
+    is reached still finish, so a run can overshoot by up to `concurrency`
+    calls (cents for Spark, ~$0.25 for a Wonder call)."""
+
+    limit: float | None = None
+    spent: float = 0.0
+    unpriced: int = 0  # calls to models with no known price; the cap can't count them
+
+    def add(self, cost: float | None) -> None:
+        if cost is None:
+            self.unpriced += 1
+        else:
+            self.spent += cost
+
+    @property
+    def exhausted(self) -> bool:
+        return self.limit is not None and self.spent >= self.limit
+
+
+@dataclass
 class _Clock:
     harness_ms: float = 0.0
     verifier_ms: float = 0.0
@@ -143,6 +165,8 @@ class FunctionSearch:
     reasoning_in_flight: bool = False
     reasoning_since_best: int = 0
     done: bool = False
+    budget: Budget = field(default_factory=Budget)
+    spent: float = 0.0  # this function's share
 
     def __post_init__(self) -> None:
         cfg = self.config
@@ -217,16 +241,16 @@ class FunctionSearch:
         cfg = self.config
         while not self.done and self.proposed < cfg.candidates:
             tier: ModelTier = "volume"
+            if self.budget.exhausted:
+                self.stop(f"spending cap reached: ${self.budget.spent:.2f} of ${self.budget.limit:.2f}")
+                return
             # Checked even while a reasoning call is in flight: it can take minutes, and the
             # volume tier would otherwise spend the whole budget repeating itself meanwhile.
             # The in-flight call still finishes and can still win.
             if self.stall >= cfg.stall_after and self.reasoning_since_best >= cfg.reasoning_attempts:
-                self.done = True
-                self.emit(
-                    SearchConverged,
-                    reason=f"no improvement after {self.reasoning_since_best} reasoning-tier attempts "
-                    f"and {self.stall} further candidates",
-                    candidates=self.proposed,
+                self.stop(
+                    f"no improvement after {self.reasoning_since_best} reasoning-tier attempts "
+                    f"and {self.stall} further candidates"
                 )
                 return
             if self.stall >= cfg.stall_after and not self.reasoning_in_flight:
@@ -242,6 +266,11 @@ class FunctionSearch:
                 if tier == "reasoning":
                     self.reasoning_in_flight = False
 
+    def stop(self, reason: str) -> None:
+        if not self.done:
+            self.done = True
+            self.emit(SearchStopped, reason=reason, candidates=self.proposed)
+
     async def one(self, n: int, tier: ModelTier) -> None:
         cfg = self.config
         model = self.reasoning if tier == "reasoning" else self.volume
@@ -253,6 +282,8 @@ class FunctionSearch:
         except ProviderError as e:
             print(f"[{self.target.name}] model call failed: {e}")
             return
+        self.budget.add(comp.cost_usd)
+        self.spent += comp.cost_usd or 0.0
         clock = _Clock()
         try:
             await self._evaluate(f"{self.target.name}-{n:03d}", parent, tier, comp, clock)
@@ -412,6 +443,7 @@ class FunctionSearch:
             model_ms=round(comp.model_ms, 1),
             tokens_in=comp.tokens_in,
             tokens_out=comp.tokens_out,
+            cost_usd=round(comp.cost_usd, 5) if comp.cost_usd is not None else None,
         )
 
     def summary(self) -> FunctionSummary:
@@ -422,6 +454,7 @@ class FunctionSearch:
             speedup_vs_clang=round(self.base_cycles["clang"].median / b.cycles.median, 3) if b else None,
             speedup_vs_gcc=round(self.base_cycles["gcc"].median / b.cycles.median, 3) if b else None,
             candidates=self.proposed,
+            cost_usd=round(self.spent, 4),
         )
 
 
@@ -438,6 +471,7 @@ async def run_search(
     bench_lock = asyncio.Lock()
     verifier = Verifier(workers=config.verifier_workers)
     summary: dict[str, FunctionSummary] = {}
+    budget = Budget(config.max_usd)
     with EventLog(run_id, runs_dir) as log:
         if on_event:
             log.listeners.append(on_event)
@@ -450,12 +484,17 @@ async def run_search(
             )
         )
         for t in targets:
-            fs = FunctionSearch(t, volume, reasoning, config, log, bench_lock, verifier)
+            if budget.exhausted:
+                print(f"[{t.name}] skipped: spending cap reached (${budget.spent:.2f})")
+                continue
+            fs = FunctionSearch(t, volume, reasoning, config, log, bench_lock, verifier, budget=budget)
             await fs.setup()
             async with asyncio.TaskGroup() as tg:
                 for _ in range(config.concurrency):
                     tg.create_task(fs.worker())
             summary[t.name] = fs.summary()
-        log.emit(RunFinished(run_id=run_id, summary=summary))
+        if budget.unpriced:
+            print(f"note: {budget.unpriced} calls to models without a known price are not in the spend total")
+        log.emit(RunFinished(run_id=run_id, summary=summary, cost_usd=round(budget.spent, 4)))
     verifier.close()
     return run_id

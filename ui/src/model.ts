@@ -38,7 +38,7 @@ export interface FunctionView {
   best: Candidate | null;
   bestHistory: { n: number; t: number; latency: number }[]; // each new best, in order
   stalls: { t: number; afterN: number; rounds: number }[];
-  converged: { t: number; afterN: number; reason: string } | null; // stopped before the budget
+  stopped: { t: number; afterN: number; reason: string } | null; // converged or hit the spending cap
   timing: { model: number; harness: number; verifier: number; orchestrator: number };
 }
 
@@ -99,7 +99,7 @@ export function buildRun(events: RunEvent[]): RunView {
           best: null,
           bestHistory: [],
           stalls: [],
-          converged: null,
+          stopped: null,
           timing: { model: 0, harness: 0, verifier: 0, orchestrator: 0 },
         };
         fns.set(fn.id, fn);
@@ -147,9 +147,9 @@ export function buildRun(events: RunEvent[]): RunView {
         if (fn) fn.stalls.push({ t: e.timestamp, afterN: fn.candidates.length, rounds: e.rounds_without_improvement });
         break;
       }
-      case "search_converged": {
+      case "search_stopped": {
         const fn = fns.get(e.function_id);
-        if (fn) fn.converged = { t: e.timestamp, afterN: e.candidates, reason: e.reason };
+        if (fn) fn.stopped = { t: e.timestamp, afterN: e.candidates, reason: e.reason };
         break;
       }
       case "timing_breakdown": {

@@ -122,8 +122,8 @@ def _print_event(e) -> None:
             typer.secho(
                 f"[{fn}] stalled for {e.rounds_without_improvement}; calling reasoning tier", fg="yellow"
             )
-        case "search_converged":
-            typer.secho(f"[{fn}] converged: {e.reason}", fg="yellow")
+        case "search_stopped":
+            typer.secho(f"[{fn}] stopped: {e.reason}", fg="yellow")
         case "run_finished":
             for name, s in e.summary.items():
                 sp = (
@@ -132,17 +132,22 @@ def _print_event(e) -> None:
                     else "no win"
                 )
                 typer.secho(f"{name}: {sp} ({s.status or '-'}, {s.candidates} candidates)", bold=True)
+            if e.cost_usd is not None:
+                typer.secho(f"model spend: ${e.cost_usd:.2f} (list-price estimate)", bold=True)
 
 
 @app.command()
 def search(
     targets: list[str] = typer.Argument(..., help="benchmark names"),
-    volume: str = typer.Option("spark", help="volume-tier model (see oqed.providers.MODELS)"),
+    volume: str = typer.Option(
+        "spark-contributor", help="volume-tier model (see oqed.providers.MODELS); `spark` for demo runs"
+    ),
     reasoning: str = typer.Option("wonder", help="reasoning-tier model"),
     candidates: int = 24,
     concurrency: int = 8,
     stall_after: int = 8,
     reasoning_attempts: int = 2,
+    max_usd: float = typer.Option(1.0, help="stop the run once its model spend reaches this (USD)"),
     volume_effort: str = "low",
     reasoning_effort: str = "high",
 ):
@@ -157,6 +162,7 @@ def search(
         concurrency=concurrency,
         stall_after=stall_after,
         reasoning_attempts=reasoning_attempts,
+        max_usd=max_usd,
         volume_effort=volume_effort,
         reasoning_effort=reasoning_effort,
     )

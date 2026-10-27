@@ -63,7 +63,7 @@ export function CandidateFeed({ fn }: { fn: FunctionView }) {
   }
   for (; s < fn.stalls.length; s++) rows.push({ kind: "stall", rounds: fn.stalls[s].rounds, key: `stall-${s}` });
   rows.reverse();
-  const done = fn.converged;
+  const done = fn.stopped;
 
   return (
     <Panel title="Candidates" right="newest first" bodyClassName="max-h-[34rem] overflow-y-auto">

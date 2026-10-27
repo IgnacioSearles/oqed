@@ -62,7 +62,7 @@ export function Funnel({ fn }: { fn: FunctionView }) {
         <span className="text-good">✓ proven {f.proven}</span>
         <span className="text-warn">~ tested {f.tested}</span>
         <span className="col-span-2 text-ink-3 sm:text-right">
-          {fn.converged ? "converged · " : ""}{fn.stalls.length} {fn.stalls.length === 1 ? "stall" : "stalls"} → reasoning tier</span>
+          {fn.stopped ? "stopped early · " : ""}{fn.stalls.length} {fn.stalls.length === 1 ? "stall" : "stalls"} → reasoning tier</span>
       </div>
       <div className="border-t border-rule-soft px-2.5 py-2 text-ink-3">
         <div className="mb-1">where time goes</div>

@@ -24,6 +24,9 @@ class ModelSpec:
     key_env: str
     reasoning_effort: bool  # whether the endpoint accepts `reasoning_effort`
     max_concurrency: int
+    # USD per million tokens (input, output), list prices without the cached-input
+    # discount, so spend estimates err high. None when unknown.
+    price: tuple[float, float] | None = None
 
 
 META_URL = "https://api.meta.ai/v1"
@@ -32,9 +35,12 @@ BASETEN_URL = "https://inference.baseten.co/v1"
 MODELS: dict[str, ModelSpec] = {
     s.name: s
     for s in [
-        ModelSpec("spark", "muse-spark-1.3", META_URL, "MODEL_API_KEY", True, 32),
-        ModelSpec("spark-contributor", "muse-spark-1.3-contributor", META_URL, "MODEL_API_KEY", True, 2),
-        ModelSpec("wonder", "muse-wonder-1.0", META_URL, "MODEL_API_KEY", True, 8),
+        ModelSpec("spark", "muse-spark-1.3", META_URL, "MODEL_API_KEY", True, 32, (1.25, 4.25)),
+        # Contributor mode: ~20x cheaper, 150 RPM, Meta may train on the traffic (fine for this public code).
+        ModelSpec(
+            "spark-contributor", "muse-spark-1.3-contributor", META_URL, "MODEL_API_KEY", True, 8, (0.1, 0.2)
+        ),
+        ModelSpec("wonder", "muse-wonder-1.0", META_URL, "MODEL_API_KEY", True, 8, (4.0, 20.0)),
         # Baseten docs: Muse Spark Open has no structured output and rejects n > 1.
         ModelSpec(
             "spark-open", "meta-models/muse-spark-open-1026", BASETEN_URL, "BASETEN_API_KEY", False, 16
@@ -52,6 +58,7 @@ class Completion:
     tokens_out: int = 0
     tokens_cached: int = 0
     truncated: bool = False  # hit max_tokens (reasoning can use the whole budget)
+    cost_usd: float | None = None  # None when the model's price is unknown
 
 
 class ProviderError(RuntimeError):
@@ -90,14 +97,17 @@ class Provider:
                 else:
                     u = r.usage
                     details = getattr(u, "prompt_tokens_details", None)
+                    tin, tout = (u.prompt_tokens, u.completion_tokens) if u else (0, 0)
+                    price = self.spec.price
                     return Completion(
                         text=r.choices[0].message.content or "",
                         model=self.spec.model,
                         model_ms=(time.perf_counter() - t0) * 1000,
-                        tokens_in=u.prompt_tokens if u else 0,
-                        tokens_out=u.completion_tokens if u else 0,
+                        tokens_in=tin,
+                        tokens_out=tout,
                         tokens_cached=(getattr(details, "cached_tokens", 0) or 0) if details else 0,
                         truncated=r.choices[0].finish_reason == "length",
+                        cost_usd=(tin * price[0] + tout * price[1]) / 1e6 if price else None,
                     )
                 await asyncio.sleep(min(30.0, 2**attempt) * (0.5 + random.random()))
             raise ProviderError(f"{self.spec.name}: giving up after retries: {err}")
@@ -111,6 +121,7 @@ class MockProvider:
     model: str = "mock"
     seed: int = 0
     delay: float = 0.0
+    cost: float = 0.0  # USD per call, for testing the spending cap
     _rng: random.Random = field(init=False)
 
     def __post_init__(self) -> None:
@@ -121,7 +132,12 @@ class MockProvider:
     ) -> Completion:
         if self.delay:
             await asyncio.sleep(self.delay)
-        return Completion(text=self._rng.choice(self.answers), model=self.model, model_ms=self.delay * 1000)
+        return Completion(
+            text=self._rng.choice(self.answers),
+            model=self.model,
+            model_ms=self.delay * 1000,
+            cost_usd=self.cost,
+        )
 
 
 def get_provider(name: str) -> Provider:
