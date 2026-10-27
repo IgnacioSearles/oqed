@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
-from . import baseline, fake
+from . import baseline, fake, harness
+from .isa import forbidden_instructions, isa_violations
 from .targets import load_all, load_target
-from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU
+from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, ToolError, assemble, compile_to_asm
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -55,6 +58,35 @@ def fake_run(
     """Write a synthetic run (real baselines, fake search) for UI development."""
     ts = [load_target(n) for n in targets] if targets else load_all()
     typer.echo(fake.generate(ts, candidates, seed, delay))
+
+
+@app.command("try")
+def try_cmd(name: str, asm_file: Path, march: str = DEFAULT_MARCH):
+    """Check a hand-written candidate (Intel-syntax function body) against a target."""
+    t = load_target(name)
+    try:
+        code = assemble(asm_file.read_text())
+    except ToolError as e:
+        typer.secho(f"assemble: {e}", fg="red")
+        raise typer.Exit(1) from None
+    if bad := forbidden_instructions(code) or isa_violations(code, march):
+        typer.secho(f"rejected: {', '.join(bad)}", fg="red")
+        raise typer.Exit(1)
+    ref = {c: assemble(compile_to_asm(t, c, march)) for c in ("clang", "gcc")}
+    res = harness.difftest(t, ref["clang"], code)
+    if not res.passed:
+        typer.secho(f"test failed: {res.reason}", fg="red")
+        if res.counterexample:
+            typer.echo(f"  counterexample: {res.counterexample.model_dump_json()}")
+        raise typer.Exit(1)
+    typer.secho(f"passed {res.inputs_tested} differential tests vs clang", fg="green")
+    typer.echo("TSC ticks/call (median ± IQR), call overhead included:")
+    for label, c in [("clang", ref["clang"]), ("gcc", ref["gcc"]), ("candidate", code)]:
+        lat, tput = harness.measure(c, t, latency=True), harness.measure(c, t, latency=False)
+        typer.echo(
+            f"  {label:9}  latency {lat.median:6.2f} ± {lat.spread:.2f}"
+            f"   throughput {tput.median:6.2f} ± {tput.spread:.2f}"
+        )
 
 
 def main() -> None:

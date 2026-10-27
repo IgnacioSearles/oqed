@@ -5,7 +5,7 @@ features."""
 
 from __future__ import annotations
 
-from iced_x86 import CpuidFeature, Decoder, Formatter, FormatterSyntax
+from iced_x86 import CpuidFeature, Decoder, Formatter, FormatterSyntax, Mnemonic
 
 _FEATURE_NAMES = {v: k for k, v in vars(CpuidFeature).items() if not k.startswith("_")}
 
@@ -43,3 +43,17 @@ def isa_violations(code: bytes, march: str) -> list[str]:
         if missing:
             bad.append(f"{fmt.format(insn)} ({', '.join(missing)})")
     return bad
+
+
+# Instructions a pure function never needs: system calls and traps (sandbox
+# escape attempts or crashes) and sources of nondeterminism.
+_FORBIDDEN = {
+    getattr(Mnemonic, m)
+    for m in "SYSCALL SYSENTER INT INT1 INT3 INTO HLT IN OUT CLI STI "
+    "RDTSC RDTSCP RDRAND RDSEED RDPID RDPMC CPUID XGETBV".split()
+}
+
+
+def forbidden_instructions(code: bytes) -> list[str]:
+    fmt = Formatter(FormatterSyntax.INTEL)
+    return [fmt.format(i) for i in Decoder(64, code) if i.mnemonic in _FORBIDDEN]

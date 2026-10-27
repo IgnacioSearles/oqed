@@ -364,6 +364,7 @@ source = { editable = "." }
 dependencies = [
     { name = "angr" },
     { name = "iced-x86" },
+    { name = "oqed-harness" },
     { name = "pydantic" },
     { name = "pyelftools" },
     { name = "typer" },
@@ -380,6 +381,7 @@ dev = [
 requires-dist = [
     { name = "angr", specifier = ">=10.0.5" },
     { name = "iced-x86", specifier = ">=1.21.0" },
+    { name = "oqed-harness", directory = "harness" },
     { name = "pydantic", specifier = ">=2.14.1" },
     { name = "pyelftools", specifier = ">=0.33" },
     { name = "typer", specifier = ">=0.27.3" },
@@ -391,6 +393,11 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.17.2" },
 ]
+
+[[package]]
+name = "oqed-harness"
+version = "0.1.0"
+source = { directory = "harness" }
 
 [[package]]
 name = "packaging"

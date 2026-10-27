@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "LLM-guided x86-64 superoptimizer with formal equivalence proofs"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "oqed-harness",
     "angr>=10.0.5",
     "iced-x86>=1.21.0",
     "pydantic>=2.14.1",
@@ -21,6 +22,9 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.17.2",
 ]
+
+[tool.uv.sources]
+oqed-harness = { path = "harness", editable = false }
 
 [project.scripts]
 oqed = "oqed.cli:main"
