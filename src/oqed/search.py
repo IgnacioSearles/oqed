@@ -3,8 +3,9 @@ pipeline (parse, assemble, ISA, differential test, llvm-mca estimate,
 measured latency), and feed the best results and failures back into the
 next prompts. When the search stalls, the reasoning tier is called.
 
-Until the SMT verifier lands, surviving candidates are `tested_only`; this
-module never claims a proof.
+Candidates that beat -O3 are then checked by the SMT verifier: `proven` only
+when it decides equivalence, `tested_only` when it can't decide, and rejected
+with a counterexample when it finds one.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from .events import (
     FunctionSummary,
     ModelTier,
     NewBest,
+    ProofStatus,
     RejectStage,
     RunFinished,
     RunStarted,
@@ -41,6 +43,7 @@ from .isa import forbidden_instructions, isa_violations
 from .providers import Completion, ProviderError
 from .targets import Target, c_signature
 from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, ToolError, assemble, mca
+from .verify import Verifier
 
 
 class Model(Protocol):
@@ -61,6 +64,7 @@ class SearchConfig:
     population: int = 3  # best candidates shown to the model
     failures_shown: int = 6
     min_gain: float = 0.02  # a candidate must be at least 2% faster than the bar it has to beat
+    verifier_workers: int = 4
     march: str = DEFAULT_MARCH
     mcpu: str = DEFAULT_MCPU
 
@@ -90,6 +94,7 @@ class _Best:
     asm: str
     explanation: str
     cycles: Cycles
+    status: ProofStatus = "tested_only"
 
 
 @dataclass
@@ -100,6 +105,7 @@ class FunctionSearch:
     config: SearchConfig
     log: EventLog
     bench_lock: asyncio.Lock
+    verifier: Verifier
     best: list[_Best] = field(default_factory=list)
     failures: deque = field(default_factory=lambda: deque(maxlen=6))
     seen: set[str] = field(default_factory=set)
@@ -218,7 +224,6 @@ class FunctionSearch:
         if not res.passed:
             reject("test", res.reason, asm, expl, res.counterexample)
             return
-        self.emit(CandidateVerified, candidate_id=cid, status="tested_only")
 
         est = await asyncio.to_thread(mca, asm, self.target, cfg.mcpu)
         if est.latency > self.mca_ceiling:
@@ -242,14 +247,21 @@ class FunctionSearch:
             speedup_vs_clang=round(self.base_cycles["clang"].median / cyc.median, 3),
             speedup_vs_gcc=round(self.base_cycles["gcc"].median / cyc.median, 3),
         )
-        self.emit(
-            TimingBreakdown,
-            model_ms=comp.model_ms,
-            harness_ms=harness_ms,
-            verifier_ms=0.0,
-            orchestrator_ms=max(0.0, (time.perf_counter() - t_start) * 1000 - comp.model_ms - harness_ms),
-        )
+        verifier_ms = 0.0
+
+        def timing() -> None:
+            self.emit(
+                TimingBreakdown,
+                model_ms=comp.model_ms,
+                harness_ms=harness_ms,
+                verifier_ms=verifier_ms,
+                orchestrator_ms=max(
+                    0.0, (time.perf_counter() - t_start) * 1000 - comp.model_ms - harness_ms - verifier_ms
+                ),
+            )
+
         if not _faster(cyc, self.bar, cfg.min_gain):
+            timing()
             reject(
                 "benchmark",
                 f"{cyc.median:.2f} ticks/call, not faster than -O3 ({self.bar.median:.2f})",
@@ -257,15 +269,43 @@ class FunctionSearch:
                 expl,
             )
             return
-        entry = _Best(cid, asm, expl, cyc)
-        # The incumbent stays best unless beaten by more than the noise; other
-        # candidates only join the population shown to the model.
-        if not self.best or _faster(cyc, self.best[0].cycles, 0.0):
+
+        # Proofs are the expensive stage, so only candidates that beat -O3 get one.
+        v = await self.verifier.check_async(self.target, self.ref_code, code)
+        verifier_ms = v.elapsed_ms
+        timing()
+        if v.status == "not_equivalent":
+            self.emit(
+                CandidateRejected,
+                candidate_id=cid,
+                stage="verify",
+                reason=v.reason,
+                counterexample=v.counterexample,
+            )
+            args = ", ".join(f"{k}={val}" for k, val in (v.counterexample or {}).items())
+            self.failures.append((asm, expl, f"verify: SMT proof found a counterexample: {args}: {v.reason}"))
+            self.stall += 1
+            return
+        status: ProofStatus = "proven" if v.status == "equivalent" else "tested_only"
+        self.emit(CandidateVerified, candidate_id=cid, status=status, reason=v.reason or None)
+
+        entry = _Best(cid, asm, expl, cyc, status)
+        # Proven beats tested-only. Otherwise the incumbent stays best unless
+        # beaten by more than the noise; other candidates only join the
+        # population shown to the model.
+        inc = self.best[0] if self.best else None
+        if (
+            inc is None
+            or (status == "proven" and inc.status != "proven")
+            or (status == inc.status and _faster(cyc, inc.cycles, 0.0))
+        ):
             self.best.insert(0, entry)
             self.emit(NewBest, candidate_id=cid)
             self.stall = 0
         else:
-            self.best[1:] = sorted([*self.best[1:], entry], key=lambda b: b.cycles.median)
+            self.best[1:] = sorted(
+                [*self.best[1:], entry], key=lambda b: (b.status != "proven", b.cycles.median)
+            )
             self.stall += 1
         del self.best[cfg.population :]
 
@@ -287,7 +327,7 @@ class FunctionSearch:
         b = self.best[0] if self.best else None
         return FunctionSummary(
             best_candidate_id=b.candidate_id if b else None,
-            status="tested_only" if b else None,
+            status=b.status if b else None,
             speedup_vs_clang=round(self.base_cycles["clang"].median / b.cycles.median, 3) if b else None,
             speedup_vs_gcc=round(self.base_cycles["gcc"].median / b.cycles.median, 3) if b else None,
             candidates=self.proposed,
@@ -305,6 +345,7 @@ async def run_search(
 ) -> str:
     run_id = run_id or f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
     bench_lock = asyncio.Lock()
+    verifier = Verifier(workers=config.verifier_workers)
     summary: dict[str, FunctionSummary] = {}
     with EventLog(run_id, runs_dir) as log:
         if on_event:
@@ -318,7 +359,7 @@ async def run_search(
             )
         )
         for t in targets:
-            fs = FunctionSearch(t, volume, reasoning, config, log, bench_lock)
+            fs = FunctionSearch(t, volume, reasoning, config, log, bench_lock, verifier)
             fs.failures = deque(maxlen=config.failures_shown)
             await fs.setup()
             async with asyncio.TaskGroup() as tg:
@@ -326,4 +367,5 @@ async def run_search(
                     tg.create_task(fs.worker())
             summary[t.name] = fs.summary()
         log.emit(RunFinished(run_id=run_id, summary=summary))
+    verifier.close()
     return run_id

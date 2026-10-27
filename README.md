@@ -6,7 +6,7 @@ oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C function, i
 
 Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
-> **Status: early development.** The model-guided search loop, sandboxed Rust harness, and differential testing work end to end. The SMT verifier and the UI are not built yet, so every result is currently **tested, not proven**. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing and SMT verifier work end to end. The UI is not built yet. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 
@@ -17,14 +17,14 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
         Muse Spark (volume) / Muse Wonder (reasoning on stalls)
                     │  candidate assembly + one-line explanation
                     ▼
-  assemble ─► ISA check ─► differential test ─► SMT proof ─► llvm-mca ─► measured cycles
+  assemble ─► ISA check ─► differential test ─► llvm-mca ─► measured latency ─► SMT proof
                     │  counterexamples fed back to the model
                     ▼
         best verified candidates ─► drop-in inline-asm patch
 ```
 
 - **Models:** `muse-spark-1.3` ([Meta Model API](https://dev.meta.ai/docs/overview)) generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history when progress stalls. Muse Spark Open (`meta-models/muse-spark-open-1026` on [Baseten](https://docs.baseten.co)) can run the volume tier instead.
-- **Correctness first:** "proven equivalent" is claimed only for loop-free code that passes symbolic equivalence checking (angr + Z3). Anything else is labeled "tested, not proven". The verifier will ship with a suite of deliberately wrong rewrites it must reject.
+- **Correctness first:** "proven equivalent" is claimed only when symbolic execution (angr/VEX) plus Z3 shows the candidate matches the reference for every ABI-valid input: return value at its width, callee-saved registers and stack pointer. Loops, non-stack memory, instructions with undefined results (`bsf`/`bsr` on zero) and solver timeouts give "unknown", shown as **tested, not proven**. SMT counterexamples are replayed on the CPU. `tests/test_verify.py` holds a suite of deliberately wrong rewrites (wrapping shift counts, reading undefined upper register bits, off-by-one, wrong flag, wrong sign extension, clobbered `rbx`, unbalanced stack, a bug on a single input that random testing misses, ...), and none may be proven.
 - **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
 - **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
 

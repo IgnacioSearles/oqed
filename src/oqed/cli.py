@@ -111,10 +111,13 @@ def _print_event(e) -> None:
                 f"[{fn}]   {e.cycles.median:.2f} ± {e.cycles.spread:.2f} ticks/call "
                 f"(x{e.speedup_vs_clang} vs clang, x{e.speedup_vs_gcc} vs gcc)"
             )
+        case "candidate_verified":
+            if e.status == "proven":
+                typer.secho(f"[{fn}]   proven equivalent", fg="green")
+            else:
+                typer.secho(f"[{fn}]   tested only: {e.reason}", fg="yellow")
         case "new_best":
-            typer.secho(
-                f"[{fn}]   * new best: {e.candidate_id} (tested, not yet proven)", fg="green", bold=True
-            )
+            typer.secho(f"[{fn}]   * new best: {e.candidate_id}", fg="green", bold=True)
         case "search_stalled":
             typer.secho(
                 f"[{fn}] stalled for {e.rounds_without_improvement}; calling reasoning tier", fg="yellow"

@@ -79,6 +79,7 @@ class CandidateVerified(_Event):
     function_id: str
     candidate_id: str
     status: ProofStatus
+    reason: str | None = None  # why it is only tested, when the verifier could not decide
 
 
 class CandidateBenchmarked(_Event):

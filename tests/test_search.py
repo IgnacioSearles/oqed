@@ -52,10 +52,8 @@ def test_search_loop_with_mock(tmp_path):
     assert stages["test"] >= 1 and stages["assemble"] >= 1 and stages["isa"] >= 1
     assert stages["duplicate"] >= 1
     assert kinds["new_best"] == 1
-    # No proofs exist yet: nothing may be labelled proven.
-    assert all(e.status == "tested_only" for e in events if e.type == "candidate_verified")
     summary = events[-1].summary[T.name]
-    assert summary.status == "tested_only" and summary.speedup_vs_clang > 1.5
+    assert summary.status == "proven" and summary.speedup_vs_clang > 1.5
     # The wrong rewrite's counterexample is reported.
     assert any(e.counterexample == {"a": 0} for e in events if e.type == "candidate_rejected")
 
