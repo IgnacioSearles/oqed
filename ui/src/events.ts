@@ -101,6 +101,13 @@ export interface SearchStalled extends Base {
   rounds_without_improvement: number;
 }
 
+export interface SearchConverged extends Base {
+  type: "search_converged";
+  function_id: string;
+  reason: string;
+  candidates: number;
+}
+
 export interface TimingBreakdown extends Base {
   type: "timing_breakdown";
   function_id?: string | null;
@@ -132,6 +139,7 @@ export type RunEvent =
   | CandidateBenchmarked
   | NewBest
   | SearchStalled
+  | SearchConverged
   | TimingBreakdown
   | RunFinished;
 

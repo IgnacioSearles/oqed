@@ -165,3 +165,27 @@ def test_clang_and_gcc_are_proven_equivalent(target):
     gcc = assemble(compile_to_asm(target, "gcc"))
     r = check_sync(target, clang(target.name), gcc)
     assert r.status == "equivalent", r
+
+
+def test_restart_does_not_break_other_checks():
+    """A timeout elsewhere kills the whole pool; checks running in it retry."""
+    import threading
+    import time
+
+    from oqed.verify import Verifier
+
+    t = load_target("mulhi_u32_portable")
+    slow = code("mov eax, edi", "mul esi", "mov eax, edx", "ret")  # nonlinear: runs to the solver limit
+    v = Verifier(workers=2, timeout_s=4)
+    try:
+        out = {}
+        th = threading.Thread(target=lambda: out.setdefault("r", v.check(t, clang(t.name), slow)))
+        th.start()
+        time.sleep(1.5)
+        v._restart(v._pool)  # what a timed-out check does
+        th.join()
+        assert out["r"].status in ("unknown", "equivalent")
+        rt = load_target("round_up_pow2_u32")
+        assert v.check(rt, clang(rt.name), code(*ROUND_UP_GOOD)).status == "equivalent"
+    finally:
+        v.close()

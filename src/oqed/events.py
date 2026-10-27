@@ -106,6 +106,15 @@ class SearchStalled(_Event):
     rounds_without_improvement: int
 
 
+class SearchConverged(_Event):
+    """The search for this function stopped before its candidate budget."""
+
+    type: Literal["search_converged"] = "search_converged"
+    function_id: str
+    reason: str
+    candidates: int  # proposed when it stopped
+
+
 class TimingBreakdown(_Event):
     type: Literal["timing_breakdown"] = "timing_breakdown"
     function_id: str | None = None
@@ -137,6 +146,7 @@ Event = Annotated[
     | CandidateBenchmarked
     | NewBest
     | SearchStalled
+    | SearchConverged
     | TimingBreakdown
     | RunFinished,
     Field(discriminator="type"),

@@ -14,6 +14,10 @@ export function ResultView({ fn }: { fn: FunctionView }) {
   const faster = bestCompiler(fn);
   const speedup = headlineSpeedup(fn);
   const bar = faster.baseline.cycles?.median;
+  // The best is proven-first; a faster candidate that could only be tested is worth naming.
+  const unproven = fn.candidates
+    .filter((c) => c.status === "tested_only" && c.cycles && best?.cycles && c.cycles.median < best.cycles.median)
+    .sort((a, b) => a.cycles!.median - b.cycles!.median)[0];
 
   const listings = useMemo(() => {
     const oqed = best ? instructionLines(best.asm) : [];
@@ -84,6 +88,16 @@ export function ResultView({ fn }: { fn: FunctionView }) {
             <>
               <div className="text-ink-3">trick</div>
               <div className="text-ink">{best.explanation || "—"}</div>
+              {best.status === "proven" && unproven && bar && (
+                <>
+                  <div className="text-ink-3">unproven</div>
+                  <div className="text-ink-2">
+                    <span className="text-warn">~</span> candidate {unproven.n} reaches{" "}
+                    {(bar / unproven.cycles!.median).toFixed(2)}× but is tested only
+                    {unproven.statusReason ? ` (${unproven.statusReason})` : ""}, so it does not ship
+                  </div>
+                </>
+              )}
               <div className="text-ink-3">found by</div>
               <div className="text-ink-2">
                 {modelLabel(best.model)} ({best.tier === "reasoning" ? "reasoning" : "volume"} tier), candidate{" "}

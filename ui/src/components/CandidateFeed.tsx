@@ -63,10 +63,16 @@ export function CandidateFeed({ fn }: { fn: FunctionView }) {
   }
   for (; s < fn.stalls.length; s++) rows.push({ kind: "stall", rounds: fn.stalls[s].rounds, key: `stall-${s}` });
   rows.reverse();
+  const done = fn.converged;
 
   return (
     <Panel title="Candidates" right="newest first" bodyClassName="max-h-[34rem] overflow-y-auto">
       <ol>
+        {done && (
+          <li className="border-b border-rule-soft bg-panel-head px-2.5 py-1 text-ink-2">
+            ■ search stopped early: {done.reason}
+          </li>
+        )}
         {rows.map((r) =>
           r.kind === "stall" ? (
             <li key={r.key} className="border-b border-rule-soft bg-panel-head px-2.5 py-1 text-ink-2">

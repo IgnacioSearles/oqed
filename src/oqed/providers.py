@@ -65,7 +65,8 @@ class Provider:
             raise ProviderError(f"{spec.key_env} is not set (see .env.example)")
         self.spec = spec
         self.model = spec.model
-        self._client = AsyncOpenAI(base_url=spec.base_url, api_key=key, max_retries=0, timeout=300)
+        # Wonder at high effort can take more than 250 s for one reply.
+        self._client = AsyncOpenAI(base_url=spec.base_url, api_key=key, max_retries=0, timeout=600)
         self._sem = asyncio.Semaphore(spec.max_concurrency)
 
     async def complete(
@@ -75,8 +76,9 @@ class Provider:
         if effort and self.spec.reasoning_effort:
             kwargs["reasoning_effort"] = effort
         async with self._sem:
+            # model_ms covers every attempt and backoff: all of it is time spent waiting on the model.
+            t0 = time.perf_counter()
             for attempt in range(6):
-                t0 = time.perf_counter()
                 try:
                     r = await self._client.chat.completions.create(**kwargs)
                 except (RateLimitError, APIConnectionError) as e:

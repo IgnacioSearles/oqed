@@ -122,6 +122,8 @@ def _print_event(e) -> None:
             typer.secho(
                 f"[{fn}] stalled for {e.rounds_without_improvement}; calling reasoning tier", fg="yellow"
             )
+        case "search_converged":
+            typer.secho(f"[{fn}] converged: {e.reason}", fg="yellow")
         case "run_finished":
             for name, s in e.summary.items():
                 sp = (
@@ -140,6 +142,7 @@ def search(
     candidates: int = 24,
     concurrency: int = 8,
     stall_after: int = 8,
+    reasoning_attempts: int = 2,
     volume_effort: str = "low",
     reasoning_effort: str = "high",
 ):
@@ -153,6 +156,7 @@ def search(
         candidates=candidates,
         concurrency=concurrency,
         stall_after=stall_after,
+        reasoning_attempts=reasoning_attempts,
         volume_effort=volume_effort,
         reasoning_effort=reasoning_effort,
     )

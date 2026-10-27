@@ -26,6 +26,8 @@ Rules for the code you write:
 - For results narrower than 64 bits, only the low bits of rax matching the return type matter.
 - Preserve rbx, rbp, r12-r15 and rsp. rax, rcx, rdx, rsi, rdi, r8-r11 are free scratch.
 - No memory accesses, no calls, no system instructions. End with `ret`.
+- Every instruction must contribute to the result. Padding a known answer with unused
+  instructions to make it look new wastes an attempt.
 - Allowed ISA: x86-64-v3 (up to AVX2, BMI1, BMI2, LZCNT, POPCNT, MOVBE, FMA, F16C).
   Not allowed: AVX-512, PCLMULQDQ, AES, SHA, ADX, or anything newer.
 
@@ -65,6 +67,20 @@ class CandidateInfo:
     explanation: str
     measured_latency: float | None = None
     failure: str | None = None  # stage: reason (+ counterexample)
+    status: str | None = None  # proven / tested_only, for candidates that beat -O3
+
+
+@dataclass
+class SearchState:
+    """What the model sees about the search so far."""
+
+    best: list[CandidateInfo]  # beat -O3, fastest first
+    near: list[CandidateInfo]  # correct but not faster than -O3, fastest first
+    failures: list[CandidateInfo]  # recent mistakes, with their code
+    tried: list[str]  # one line per distinct idea tried so far
+    parent: int | None = None  # index into `best` (or `near` when there is no best) to mutate
+    hint: str | None = None
+    best_report: str | None = None  # llvm-mca bottleneck analysis of the current best
 
 
 def target_context(target: Target, baselines: list[BaselineInfo], mca_report: str) -> str:
@@ -98,34 +114,56 @@ HINTS = [
 ]
 
 
-def search_state(
-    best: list[CandidateInfo], failures: list[CandidateInfo], reasoning: bool, hint: str | None = None
-) -> str:
+def _listing(c: CandidateInfo, label: str | None = None) -> str:
+    lat = f"{c.measured_latency:.2f} ticks/call" if c.measured_latency else "unmeasured"
+    status = {"proven": ", proven equivalent", "tested_only": ", tested"}.get(c.status or "", "")
+    head = f"{label}: " if label else "- "
+    return f"{head}{c.explanation} ({lat}{status})\n```asm\n{c.asm.rstrip()}\n```"
+
+
+def search_state(st: SearchState, reasoning: bool) -> str:
+    """The search-dependent tail of the prompt.
+
+    Volume-tier calls each mutate one parent from the population. Reasoning-tier
+    calls see everything, including the bottleneck report of the current best,
+    and are asked for a different approach."""
     parts = []
-    if best:
-        parts.append("Best verified candidates so far (fastest first):")
-        for c in best:
-            lat = f"{c.measured_latency:.2f} ticks/call" if c.measured_latency else "unmeasured"
-            parts.append(f"- {c.explanation} ({lat})\n```asm\n{c.asm.rstrip()}\n```")
-    if failures:
+    pool, pool_name = (st.best, "best") if st.best else (st.near, "near")
+    parent = pool[st.parent] if st.parent is not None and st.parent < len(pool) else None
+    if st.best:
+        parts.append("Candidates that beat -O3 so far (fastest first):")
+        parts += [_listing(c) for c in st.best]
+    elif st.near:
+        parts.append("Nothing has beaten -O3 yet. Correct candidates that came closest (fastest first):")
+        parts += [_listing(c) for c in st.near]
+    if st.failures:
         parts.append("Recent failed attempts (do not repeat these mistakes):")
-        for c in failures:
+        for c in st.failures:
             parts.append(f"- {c.explanation} -> {c.failure}\n```asm\n{c.asm.rstrip()}\n```")
+    if st.tried:
+        parts.append(
+            "Ideas already tried, with their outcome. Do not resubmit any of them, even with different\n"
+            "registers or instruction order:\n" + "\n".join(f"- {t}" for t in st.tried)
+        )
     if reasoning:
+        if st.best_report:
+            report = st.best_report.strip()
+            parts.append(f"llvm-mca bottleneck analysis of the current best:\n```\n{report}\n```")
         parts.append(
             "The search has stalled: recent attempts did not beat the best. Step back and analyse the\n"
             "critical path and the bottleneck report. Then propose a substantially different approach,\n"
             "not a small tweak of the candidates above."
         )
-    elif best:
+    elif parent is not None:
+        what = "shorten its critical path or remove instructions" if pool_name == "best" else "make it faster"
         parts.append(
-            "Improve on the best candidate: shorten its critical path or remove instructions. "
+            f"Start from this candidate and {what}:\n{_listing(parent, 'Parent')}\n"
             "Your answer must differ from every candidate shown above."
         )
     else:
         parts.append("Write a faster equivalent of the compiler output.")
-    if hint and not reasoning:
-        parts.append(f"Direction for this attempt: {hint}")
+    if st.hint and not reasoning:
+        parts.append(f"Direction for this attempt: {st.hint}")
     return "\n\n".join(parts)
 
 

@@ -26,9 +26,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures.process import BrokenProcessPool
 from typing import Literal
 
 from iced_x86 import Decoder, FlowControl, Mnemonic, OpKind, Register
@@ -225,6 +227,7 @@ class Verifier:
 
     def __init__(self, workers: int = 4, timeout_s: float = 60.0):
         self.workers, self.timeout_s = workers, timeout_s
+        self._lock = threading.Lock()
         self._pool = self._new_pool()
 
     def _new_pool(self) -> ProcessPoolExecutor:
@@ -232,23 +235,34 @@ class Verifier:
         ctx = multiprocessing.get_context("spawn")
         return ProcessPoolExecutor(self.workers, mp_context=ctx, initializer=_worker_init)
 
-    def _restart(self) -> None:
+    def _restart(self, broken: ProcessPoolExecutor) -> None:
         # A check that ignores its timeout keeps a worker busy forever; the
-        # executor has no public way to kill workers, so terminate them.
-        for p in list(getattr(self._pool, "_processes", {}).values()):
-            p.kill()
-        self._pool.shutdown(wait=False, cancel_futures=True)
-        self._pool = self._new_pool()
+        # executor has no public way to kill workers, so terminate them. That
+        # breaks every other check running in the pool too; those see
+        # BrokenProcessPool and retry on the new pool. Only the first caller
+        # for a given pool replaces it.
+        with self._lock:
+            if self._pool is not broken:
+                return
+            for p in list(getattr(broken, "_processes", {}).values()):
+                p.kill()
+            broken.shutdown(wait=False, cancel_futures=True)
+            self._pool = self._new_pool()
 
     def check(self, target: Target, reference: bytes, candidate: bytes) -> VerifyResult:
-        fut = self._pool.submit(check_sync, target, reference, candidate, int(self.timeout_s * 1000 * 0.8))
-        try:
-            return fut.result(timeout=self.timeout_s)
-        except FutureTimeout:
-            self._restart()
-            return VerifyResult(
-                status="unknown", reason="verification timed out", elapsed_ms=self.timeout_s * 1000
-            )
+        for _ in range(3):
+            pool = self._pool
+            try:
+                fut = pool.submit(check_sync, target, reference, candidate, int(self.timeout_s * 1000 * 0.8))
+                return fut.result(timeout=self.timeout_s)
+            except FutureTimeout:
+                self._restart(pool)
+                return VerifyResult(
+                    status="unknown", reason="verification timed out", elapsed_ms=self.timeout_s * 1000
+                )
+            except BrokenProcessPool:
+                self._restart(pool)  # killed alongside another check that timed out
+        return VerifyResult(status="unknown", reason="verifier workers kept crashing", elapsed_ms=0.0)
 
     async def check_async(self, target: Target, reference: bytes, candidate: bytes) -> VerifyResult:
         return await asyncio.to_thread(self.check, target, reference, candidate)

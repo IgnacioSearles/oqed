@@ -11,6 +11,7 @@ with a counterexample when it finds one.
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 import uuid
 from collections import deque
@@ -36,6 +37,7 @@ from .events import (
     RejectStage,
     RunFinished,
     RunStarted,
+    SearchConverged,
     SearchStalled,
     TimingBreakdown,
 )
@@ -56,15 +58,20 @@ class Model(Protocol):
 
 @dataclass
 class SearchConfig:
-    candidates: int = 24  # model calls per function
+    candidates: int = 24  # model calls per function, at most
     concurrency: int = 8
     stall_after: int = 8  # evaluated candidates without improvement before calling the reasoning tier
+    reasoning_attempts: int = 2  # fruitless reasoning-tier calls before the function counts as converged
     volume_effort: str = "low"
     reasoning_effort: str = "high"
-    population: int = 3  # best candidates shown to the model
-    failures_shown: int = 6
+    population: int = 3  # candidates that beat -O3, kept as parents
+    near_misses: int = 3  # correct candidates that did not beat -O3, parents until something does
+    failures_shown: int = 6  # recent failures (with code) shown to the volume tier
+    reasoning_failures_shown: int = 12
+    tried_shown: int = 24  # one-line summaries of earlier ideas
     min_gain: float = 0.02  # a candidate must be at least 2% faster than the bar it has to beat
     verifier_workers: int = 4
+    seed: int = 0  # parent selection
     march: str = DEFAULT_MARCH
     mcpu: str = DEFAULT_MCPU
 
@@ -78,23 +85,44 @@ def _normalize(asm: str) -> str:
     return "\n".join(" ".join(ln.lower().split()) for ln in asm.splitlines() if ln.strip())
 
 
+def _args(ce: dict[str, int]) -> str:
+    return ", ".join(f"{k}={v}" for k, v in ce.items())
+
+
 def _describe_failure(stage: str, reason: str, ce: harness.Counterexample | None) -> str:
     text = f"{stage}: {reason}"
     if ce:
-        args = ", ".join(f"{k}={v}" for k, v in ce.args.items())
-        text += f" for {args} (expected {ce.expected}, got {ce.got})"
+        text += f" for {_args(ce.args)} (expected {ce.expected}, got {ce.got})"
         if ce.needs_upper_bits:
             text += "; it only fails when the undefined upper 32 bits of an argument are nonzero"
     return text
 
 
+# Outcome wording for the "ideas already tried" list.
+_TRIED = {
+    "assemble": "did not assemble",
+    "isa": "used a disallowed instruction",
+    "estimate": "far slower by llvm-mca",
+}
+
+
 @dataclass
-class _Best:
+class _Member:
     candidate_id: str
     asm: str
     explanation: str
     cycles: Cycles
-    status: ProofStatus = "tested_only"
+    status: ProofStatus | None = None  # None for near misses
+    report: str | None = None  # llvm-mca bottleneck analysis
+
+    def info(self) -> prompt.CandidateInfo:
+        return prompt.CandidateInfo(self.asm, self.explanation, self.cycles.median, status=self.status)
+
+
+@dataclass
+class _Clock:
+    harness_ms: float = 0.0
+    verifier_ms: float = 0.0
 
 
 @dataclass
@@ -106,12 +134,21 @@ class FunctionSearch:
     log: EventLog
     bench_lock: asyncio.Lock
     verifier: Verifier
-    best: list[_Best] = field(default_factory=list)
-    failures: deque = field(default_factory=lambda: deque(maxlen=6))
+    best: list[_Member] = field(default_factory=list)  # beat -O3; best[0] is the incumbent
+    near: list[_Member] = field(default_factory=list)  # correct, measured, not faster than -O3
     seen: set[str] = field(default_factory=set)
+    seen_code: set[bytes] = field(default_factory=set)
     stall: int = 0
     proposed: int = 0
     reasoning_in_flight: bool = False
+    reasoning_since_best: int = 0
+    done: bool = False
+
+    def __post_init__(self) -> None:
+        cfg = self.config
+        self.failures: deque = deque(maxlen=max(cfg.failures_shown, cfg.reasoning_failures_shown))
+        self.tried: deque[str] = deque(maxlen=cfg.tried_shown)
+        self.rng = random.Random(f"{cfg.seed}:{self.target.name}")
 
     def emit(self, event_cls, **kw) -> None:
         self.log.emit(event_cls(run_id=self.log.run_id, function_id=self.target.name, **kw))
@@ -145,24 +182,62 @@ class FunctionSearch:
             bases["clang"].mca.report,
         )
 
-    def _messages(self, reasoning: bool, n: int) -> list[dict]:
-        best = [prompt.CandidateInfo(b.asm, b.explanation, b.cycles.median) for b in self.best]
+    def _pool(self) -> list[_Member]:
+        """Parents, fastest first. The incumbent is proven-first (it is what
+        ships), but a faster tested-only candidate is the better parent."""
+        return sorted(self.best, key=lambda m: m.cycles.median) if self.best else self.near
+
+    def _pick_parent(self) -> int | None:
+        """Rank-weighted choice from the pool: the fastest most often, the
+        others often enough to keep alternative lines alive."""
+        pool = self._pool()
+        if not pool:
+            return None
+        return self.rng.choices(range(len(pool)), weights=[len(pool) - i for i in range(len(pool))])[0]
+
+    def _messages(self, reasoning: bool, n: int) -> tuple[list[dict], str | None]:
+        cfg = self.config
         fails = [prompt.CandidateInfo(a, e, failure=f) for a, e, f in self.failures]
-        hint = prompt.HINTS[n % len(prompt.HINTS)]
-        return prompt.build_messages(self.context, prompt.search_state(best, fails, reasoning, hint))
+        parent = None if reasoning else self._pick_parent()
+        state = prompt.SearchState(
+            best=[b.info() for b in self._pool()] if self.best else [],
+            near=[b.info() for b in self.near],
+            failures=fails[-(cfg.reasoning_failures_shown if reasoning else cfg.failures_shown) :],
+            tried=list(self.tried),
+            parent=parent,
+            hint=prompt.HINTS[n % len(prompt.HINTS)],
+            best_report=self._pool()[0].report if self.best else None,
+        )
+        pool = self._pool()
+        # Reasoning-tier calls see the whole population; record the fastest as their parent.
+        parent_id = pool[parent or 0].candidate_id if pool else None
+        return prompt.build_messages(self.context, prompt.search_state(state, reasoning)), parent_id
 
     async def worker(self) -> None:
-        while self.proposed < self.config.candidates:
-            self.proposed += 1
-            n = self.proposed
+        cfg = self.config
+        while not self.done and self.proposed < cfg.candidates:
             tier: ModelTier = "volume"
-            if self.stall >= self.config.stall_after and not self.reasoning_in_flight:
+            # Checked even while a reasoning call is in flight: it can take minutes, and the
+            # volume tier would otherwise spend the whole budget repeating itself meanwhile.
+            # The in-flight call still finishes and can still win.
+            if self.stall >= cfg.stall_after and self.reasoning_since_best >= cfg.reasoning_attempts:
+                self.done = True
+                self.emit(
+                    SearchConverged,
+                    reason=f"no improvement after {self.reasoning_since_best} reasoning-tier attempts "
+                    f"and {self.stall} further candidates",
+                    candidates=self.proposed,
+                )
+                return
+            if self.stall >= cfg.stall_after and not self.reasoning_in_flight:
                 tier = "reasoning"
                 self.emit(SearchStalled, rounds_without_improvement=self.stall)
                 self.stall = 0
                 self.reasoning_in_flight = True
+                self.reasoning_since_best += 1
+            self.proposed += 1
             try:
-                await self.one(n, tier)
+                await self.one(self.proposed, tier)
             finally:
                 if tier == "reasoning":
                     self.reasoning_in_flight = False
@@ -171,17 +246,30 @@ class FunctionSearch:
         cfg = self.config
         model = self.reasoning if tier == "reasoning" else self.volume
         effort = cfg.reasoning_effort if tier == "reasoning" else cfg.volume_effort
-        parent = self.best[0].candidate_id if self.best else None
+        messages, parent = self._messages(tier == "reasoning", n)
         t_start = time.perf_counter()
         try:
-            comp = await model.complete(self._messages(tier == "reasoning", n), effort=effort)
+            comp = await model.complete(messages, effort=effort)
         except ProviderError as e:
             print(f"[{self.target.name}] model call failed: {e}")
             return
-        cid = f"{self.target.name}-{n:03d}"
-        harness_ms = 0.0
+        clock = _Clock()
+        try:
+            await self._evaluate(f"{self.target.name}-{n:03d}", parent, tier, comp, clock)
+        finally:
+            total = (time.perf_counter() - t_start) * 1000
+            self.emit(
+                TimingBreakdown,
+                model_ms=comp.model_ms,
+                harness_ms=clock.harness_ms,
+                verifier_ms=clock.verifier_ms,
+                orchestrator_ms=max(0.0, total - comp.model_ms - clock.harness_ms - clock.verifier_ms),
+            )
 
-        def reject(stage: RejectStage, reason: str, asm: str, expl: str, ce=None) -> None:
+    async def _evaluate(self, cid: str, parent: str | None, tier: ModelTier, comp: Completion, clock: _Clock):
+        cfg = self.config
+
+        def reject(stage: RejectStage, reason: str, asm: str, expl: str, ce=None, tried: str | None = None):
             self.emit(
                 CandidateRejected,
                 candidate_id=cid,
@@ -191,13 +279,14 @@ class FunctionSearch:
             )
             if stage not in ("duplicate", "benchmark"):
                 self.failures.append((asm, expl, _describe_failure(stage, reason, ce)))
+            if stage != "duplicate":
+                self.tried.append(f"{expl or '(no explanation)'} -> {tried or _TRIED.get(stage, stage)}")
             self.stall += 1
 
         try:
             expl, asm = prompt.parse_reply(comp.text, self.target.function)
         except prompt.ParseError as e:
-            expl, asm = "", comp.text[-2000:]
-            self._propose(cid, parent, tier, comp, asm, expl)
+            self._propose(cid, parent, tier, comp, comp.text[-2000:], "")
             reason = "ran out of output tokens while reasoning" if comp.truncated else str(e)
             self.emit(CandidateRejected, candidate_id=cid, stage="parse", reason=reason)
             self.stall += 1
@@ -214,15 +303,24 @@ class FunctionSearch:
         try:
             code = await asyncio.to_thread(assemble, asm)
         except ToolError as e:
+            clock.harness_ms += (time.perf_counter() - t0) * 1000
             reject("assemble", str(e).splitlines()[-1].split("Error: ")[-1], asm, expl)
             return
+        # Different spelling, same bytes (hex vs decimal immediates, aliases).
+        if code in self.seen_code:
+            clock.harness_ms += (time.perf_counter() - t0) * 1000
+            reject("duplicate", "same machine code as an earlier candidate", asm, expl)
+            return
+        self.seen_code.add(code)
         if bad := forbidden_instructions(code) or isa_violations(code, cfg.march):
+            clock.harness_ms += (time.perf_counter() - t0) * 1000
             reject("isa", "not allowed: " + ", ".join(bad), asm, expl)
             return
         res = await asyncio.to_thread(harness.difftest, self.target, self.ref_code, code)
-        harness_ms += (time.perf_counter() - t0) * 1000
+        clock.harness_ms += (time.perf_counter() - t0) * 1000
         if not res.passed:
-            reject("test", res.reason, asm, expl, res.counterexample)
+            ce = res.counterexample
+            reject("test", res.reason, asm, expl, ce, tried=f"wrong for {_args(ce.args)}" if ce else "wrong")
             return
 
         est = await asyncio.to_thread(mca, asm, self.target, cfg.mcpu)
@@ -237,7 +335,7 @@ class FunctionSearch:
 
         t0 = time.perf_counter()
         cyc = await self._measure(code)
-        harness_ms += (time.perf_counter() - t0) * 1000
+        clock.harness_ms += (time.perf_counter() - t0) * 1000
         self.emit(
             CandidateBenchmarked,
             candidate_id=cid,
@@ -247,33 +345,26 @@ class FunctionSearch:
             speedup_vs_clang=round(self.base_cycles["clang"].median / cyc.median, 3),
             speedup_vs_gcc=round(self.base_cycles["gcc"].median / cyc.median, 3),
         )
-        verifier_ms = 0.0
-
-        def timing() -> None:
-            self.emit(
-                TimingBreakdown,
-                model_ms=comp.model_ms,
-                harness_ms=harness_ms,
-                verifier_ms=verifier_ms,
-                orchestrator_ms=max(
-                    0.0, (time.perf_counter() - t_start) * 1000 - comp.model_ms - harness_ms - verifier_ms
-                ),
-            )
 
         if not _faster(cyc, self.bar, cfg.min_gain):
-            timing()
             reject(
                 "benchmark",
                 f"{cyc.median:.2f} ticks/call, not faster than -O3 ({self.bar.median:.2f})",
                 asm,
                 expl,
+                tried=f"correct but {cyc.median:.2f} ticks/call, not faster than -O3 ({self.bar.median:.2f})",
             )
+            self.near = sorted([*self.near, _Member(cid, asm, expl, cyc)], key=lambda m: m.cycles.median)[
+                : cfg.near_misses
+            ]
             return
 
+        # Listed before the proof: proofs can take a while, and meanwhile other
+        # calls should know this idea is taken.
+        self.tried.append(f"{expl or '(no explanation)'} -> beats -O3 at {cyc.median:.2f} ticks/call")
         # Proofs are the expensive stage, so only candidates that beat -O3 get one.
         v = await self.verifier.check_async(self.target, self.ref_code, code)
-        verifier_ms = v.elapsed_ms
-        timing()
+        clock.verifier_ms = v.elapsed_ms
         if v.status == "not_equivalent":
             self.emit(
                 CandidateRejected,
@@ -282,17 +373,18 @@ class FunctionSearch:
                 reason=v.reason,
                 counterexample=v.counterexample,
             )
-            args = ", ".join(f"{k}={val}" for k, val in (v.counterexample or {}).items())
+            args = _args(v.counterexample or {})
             self.failures.append((asm, expl, f"verify: SMT proof found a counterexample: {args}: {v.reason}"))
+            self.tried.append(f"{expl or '(no explanation)'} -> wrong for {args} (found by the SMT proof)")
             self.stall += 1
             return
         status: ProofStatus = "proven" if v.status == "equivalent" else "tested_only"
         self.emit(CandidateVerified, candidate_id=cid, status=status, reason=v.reason or None)
 
-        entry = _Best(cid, asm, expl, cyc, status)
+        entry = _Member(cid, asm, expl, cyc, status, est.report)
         # Proven beats tested-only. Otherwise the incumbent stays best unless
         # beaten by more than the noise; other candidates only join the
-        # population shown to the model.
+        # population.
         inc = self.best[0] if self.best else None
         if (
             inc is None
@@ -302,10 +394,9 @@ class FunctionSearch:
             self.best.insert(0, entry)
             self.emit(NewBest, candidate_id=cid)
             self.stall = 0
+            self.reasoning_since_best = 0
         else:
-            self.best[1:] = sorted(
-                [*self.best[1:], entry], key=lambda b: (b.status != "proven", b.cycles.median)
-            )
+            self.best[1:] = sorted([*self.best[1:], entry], key=lambda b: b.cycles.median)
             self.stall += 1
         del self.best[cfg.population :]
 
@@ -360,7 +451,6 @@ async def run_search(
         )
         for t in targets:
             fs = FunctionSearch(t, volume, reasoning, config, log, bench_lock, verifier)
-            fs.failures = deque(maxlen=config.failures_shown)
             await fs.setup()
             async with asyncio.TaskGroup() as tg:
                 for _ in range(config.concurrency):
