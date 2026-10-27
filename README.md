@@ -25,9 +25,10 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
 - **Models:** `muse-spark-1.3` ([Meta Model API](https://dev.meta.ai/docs/overview)) generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history and the best candidate's bottleneck report when progress stalls. Muse Spark Open (`meta-models/muse-spark-open-1026` on [Baseten](https://docs.baseten.co)) can run the volume tier instead.
 - **Search:** each volume-tier call mutates one parent, drawn from the fastest candidates that beat `-O3` (or, before any do, the correct ones that came closest), and sees a one-line log of every idea already tried. Duplicates are caught on text and on machine code. A function stops early once the reasoning tier has failed to improve it twice (`--reasoning-attempts`). Every run has a spending cap (`--max-usd`, default $1, list-price estimate from token counts) and logs its model spend.
-- **Correctness first:** "proven equivalent" is claimed only when symbolic execution (angr/VEX) plus Z3 shows the candidate matches the reference for every ABI-valid input: return value at its width, callee-saved registers and stack pointer. Loops, non-stack memory, instructions with undefined results (`bsf`/`bsr` on zero) and solver timeouts give "unknown", shown as **tested, not proven**. SMT counterexamples are replayed on the CPU. `tests/test_verify.py` holds a suite of deliberately wrong rewrites (wrapping shift counts, reading undefined upper register bits, off-by-one, wrong flag, wrong sign extension, clobbered `rbx`, unbalanced stack, a bug on a single input that random testing misses, ...), and none may be proven.
+- **Correctness first:** "proven equivalent" is claimed only when symbolic execution (angr/VEX) plus Z3 shows the candidate matches the reference for every ABI-valid input: return value at its width, callee-saved registers and stack pointer. Loops (cycles in the control flow; a backward jump to a shared tail is fine), non-stack memory, instructions with undefined results (`bsf`/`bsr` on zero) and solver timeouts give "unknown", shown as **tested, not proven**. SMT counterexamples are replayed on the CPU. `tests/test_verify.py` holds a suite of deliberately wrong rewrites (wrapping shift counts, reading undefined upper register bits, off-by-one, wrong flag, wrong sign extension, clobbered `rbx`, unbalanced stack, a bug on a single input that random testing misses, ...), and none may be proven.
 - **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
 - **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
+- **Inlined benchmark mode:** `oqed inline-bench <run>` turns each winner into a GNU `asm` statement (argument registers bound by constraint, exact clobbers from the decoded instructions), times it against the C source inside a dependent loop (latency) and an independent loop (throughput, with and without the compiler's auto-vectorization), and re-proves the bytes the compiler emits around the `asm` statement. Timing through `call`/`ret` adds ~4.7 ticks per call and can rank candidates wrongly: on stb_image, call-mode wins of 1.2–1.4× on `paeth` and `blinn_8x8` came out at 1.00× inlined, and `bitreverse16` went from 1.17× to 0.52×. `high_bit` (lzcnt) held up at 3.3–4.3×.
 - **No assembly in your codebase** (planned): `oqed optimize` records verified winners in a reviewable `oqed.lock`, and `oqed-cc` is a drop-in compiler wrapper (`CC=oqed-cc make`) that applies them at build time without network calls. It falls back to the original C whenever the source, compiler or flags change, and whenever a substitution would stop the compiler from auto-vectorizing a loop.
 
 ## Quick start
@@ -42,6 +43,7 @@ uv run oqed search round_up_pow2_u32      # model-guided search (cheap contribut
 uv run oqed search clz_smear_u32 --volume spark --max-usd 5   # standard Spark, for demo runs
 uv run oqed search parity_u32 --volume spark-open
 uv run oqed try round_up_pow2_u32 my.s    # check a hand-written candidate
+uv run oqed inline-bench <run-id>         # re-measure a run's winners inlined into loops, re-prove compiled bytes
 uv run oqed baseline round_up_pow2_u32    # clang/gcc output + llvm-mca estimates
 uv run oqed scout                         # baseline table for every target
 uv run oqed fake-run                      # synthetic run log for UI development
@@ -64,6 +66,7 @@ npm run build    # static site in ui/dist with the curated runs in runs/demo/
 src/oqed/      orchestrator: search loop, providers, prompts, testing, toolchain wrappers, ISA check, events, CLI
 harness/       Rust (PyO3) extension: runs and times candidates in a forked, sandboxed child
 benchmarks/    one directory per target: func.c + meta.toml
+projects/      small real projects for end-to-end checks (stb_image decode benchmark)
 tests/         test suite
 ui/            web UI (Vite + React + TypeScript + Tailwind), reads runs/*.jsonl
 runs/          JSONL event logs (curated demo runs in runs/demo/)
@@ -73,16 +76,18 @@ Each `runs/<run_id>.jsonl` file holds one event per line (`baseline_ready`, `can
 
 ## Benchmark set
 
-24 loop-free integer functions:
+30 loop-free integer functions:
 
 - bit tricks from *Hacker's Delight* (abs, sign, averages, power-of-two rounding, parity, bit reversal, ...)
 - "missed idiom" variants that compilers don't recognize (smear + popcount for clz/log2, portable high multiply)
 - clamp and saturating-add primitives modeled on FFmpeg's `av_clip*` / `av_sat_add32`
 - hash finalizers (MurmurHash3 `fmix32`/`fmix64`, xxHash avalanche)
+- six helpers copied from [stb_image](https://github.com/nothings/stb) v2.30 (`stbi_*`: PNG Paeth predictor, JPEG clamp, luma, CMYK blend, zlib bit reversal, BMP high bit), with `projects/stb_image/` as an end-to-end testbed
 
 ## Credits
 
 - Bit-manipulation targets follow algorithms from Henry S. Warren Jr., *Hacker's Delight* (2nd ed.). The implementations here are our own.
+- `stb_image.h` / `stb_image_write.h` by Sean Barrett (public domain or MIT), vendored unchanged in `projects/stb_image/`.
 - `fmix32` / `fmix64` are from MurmurHash3 by Austin Appleby (public domain).
 - xxHash avalanche constants come from xxHash by Yann Collet (BSD 2-Clause). The finalizer implementations here are our own.
 - Built on [angr](https://angr.io), [Z3](https://github.com/Z3Prover/z3), [iced-x86](https://github.com/icedland/iced), and LLVM's `llvm-mca`.

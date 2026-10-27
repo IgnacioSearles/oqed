@@ -178,5 +178,57 @@ def search(
     typer.echo(f"run log: runs/{run_id}.jsonl")
 
 
+@app.command("inline-bench")
+def inline_bench(
+    run: str = typer.Argument(..., help="run id or path to runs/<id>.jsonl"),
+    function: str = typer.Option(None, help="only this function"),
+    every_winner: bool = typer.Option(False, help="every candidate that beat -O3, not just each new best"),
+    march: str = DEFAULT_MARCH,
+):
+    """Re-measure a run's winners inlined into loops, and re-prove the compiled bytes."""
+    import json
+
+    from . import inline
+
+    path = Path(run) if run.endswith(".jsonl") else Path("runs") / f"{run}.jsonl"
+    events = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    asm = {e["candidate_id"]: e["asm"] for e in events if e["type"] == "candidate_proposed"}
+    call_mode = {
+        e["candidate_id"]: min(e["speedup_vs_clang"], e["speedup_vs_gcc"])
+        for e in events
+        if e["type"] == "candidate_benchmarked"
+    }
+    status = {e["candidate_id"]: e["status"] for e in events if e["type"] == "candidate_verified"}
+    kind = "candidate_verified" if every_winner else "new_best"
+    picked = [(e["function_id"], e["candidate_id"]) for e in events if e["type"] == kind]
+    picked = [p for p in picked if function in (None, p[0])]
+    if not picked:
+        typer.echo("no winners in this run")
+        raise typer.Exit(1)
+
+    typer.echo("speedup vs the better of clang/gcc -O3, laptop TSC ticks per element")
+    typer.echo(
+        f"{'candidate':28} {'call':>6} {'latency':>8} {'tput':>6} {'tput C scalar':>14}  "
+        "C vectorized    proof (call)   inlined clang / gcc"
+    )
+    for fid, cid in picked:
+        t = load_target(fid)
+        try:
+            res = {c: inline.measure(asm[cid], t, c, march) for c in ("clang", "gcc")}
+        except (inline.NotInlinable, ToolError) as e:
+            typer.secho(f"{cid:28} {call_mode.get(cid, 0):5.2f}x  not inlinable: {e}", fg="yellow")
+            continue
+        proofs = [inline.reverify(asm[cid], t, c, march).status for c in ("clang", "gcc")]
+
+        best = {k: min(getattr(r, k).median for r in res.values()) for k in inline.VARIANTS}
+        vec = [c for c, r in res.items() if r.ref_vectorized]
+        lat = best["dep_ref"] / best["dep_cand"]
+        tput, scalar = best["indep_ref"] / best["indep_cand"], best["scalar_ref"] / best["indep_cand"]
+        typer.echo(
+            f"{cid:28} {call_mode.get(cid, 0):5.2f}x {lat:7.2f}x {tput:5.2f}x {scalar:13.2f}x  "
+            f"{', '.join(vec) or 'no':14}  {status.get(cid, '?'):13}  {' / '.join(proofs)}"
+        )
+
+
 def main() -> None:
     app()

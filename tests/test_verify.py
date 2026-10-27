@@ -150,6 +150,11 @@ GOOD = {
         ("push rbx", "mov ebx, edi", "neg ebx", "and ebx, edi", "mov eax, ebx", "pop rbx", "ret"),
     ),
     "parity_popcnt": ("parity_u32", ("popcnt eax, edi", "and eax, 1", "ret")),
+    # A backward jump that is not a loop: the shared tail sits before the branch.
+    "backward_jump_to_shared_tail": (
+        "abs32",
+        ("mov eax, edi", "jmp 2f", "1:", "ret", "2:", "neg eax", "cmovs eax, edi", "jmp 1b"),
+    ),
 }
 
 

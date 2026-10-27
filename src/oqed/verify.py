@@ -66,25 +66,51 @@ class VerifyResult(BaseModel):
 def unsupported(code: bytes) -> str | None:
     """Why `code` is outside what the verifier can soundly decide, or None."""
     end = len(code)
+    succ: dict[int, list[int]] = {}
     for insn in Decoder(64, code, ip=0):
         if insn.mnemonic in _UNDEFINED_RESULT:
             return "uses bsf/bsr, whose result is undefined for zero input"
         flow = insn.flow_control
         if flow in (FlowControl.INDIRECT_BRANCH, FlowControl.INDIRECT_CALL, FlowControl.CALL):
             return "contains a call or indirect jump"
+        nxt = [] if flow in (FlowControl.UNCONDITIONAL_BRANCH, FlowControl.RETURN) else [insn.next_ip]
         if flow in (FlowControl.UNCONDITIONAL_BRANCH, FlowControl.CONDITIONAL_BRANCH):
             target = insn.near_branch_target
-            if target <= insn.ip:
-                return "contains a loop (backward branch); only loop-free code is proven"
-            if target > end:
+            if target >= end:
                 return "branches outside the function"
+            nxt.append(target)
+        succ[insn.ip] = [t for t in nxt if t < end]
         if insn.mnemonic != Mnemonic.LEA:
             for op in range(insn.op_count):
                 if insn.op_kind(op) == OpKind.MEMORY and (
                     insn.memory_base != Register.RSP or insn.memory_index != Register.NONE
                 ):
                     return "accesses memory other than the stack"
+    if any(t not in succ for ts in succ.values() for t in ts):
+        return "branches into the middle of an instruction"
+    if _has_cycle(succ):
+        return "contains a loop; only loop-free code is proven"
     return None
+
+
+def _has_cycle(succ: dict[int, list[int]]) -> bool:
+    """Whether the instruction graph has a cycle. A backward jump alone is not
+    a loop: gcc often jumps back to a shared tail block."""
+    state: dict[int, int] = {}  # 1 = on the DFS stack, 2 = done
+    stack = [(0, iter(succ.get(0, [])))]
+    state[0] = 1
+    while stack:
+        node, it = stack[-1]
+        nxt = next(it, None)
+        if nxt is None:
+            state[node] = 2
+            stack.pop()
+        elif state.get(nxt) == 1:
+            return True
+        elif nxt not in state:
+            state[nxt] = 1
+            stack.append((nxt, iter(succ[nxt])))
+    return False
 
 
 def _run_symbolic(code: bytes, regs0: dict):
