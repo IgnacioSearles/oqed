@@ -424,6 +424,9 @@ class FunctionSearch:
         except inline.Mismatch as e:
             reject("inline", str(e), asm, expl, tried="wrong once inlined")
             return
+        except ToolError as e:
+            reject("inline", f"does not compile as inline asm: {str(e)[:300]}", asm, expl)
+            return
         finally:
             clock.harness_ms += (time.perf_counter() - t0) * 1000
         bar = min(refs.values(), key=lambda c: c.median)

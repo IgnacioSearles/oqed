@@ -93,7 +93,9 @@ def _template(body: str) -> str:
     lines = [ln.strip() for ln in lines if ln.strip()]
     if any(c in ln for ln in lines for c in "{|}%"):
         raise NotInlinable("contains characters that are special in asm templates ({ | } %)")
-    labels = {m.group(1) for ln in lines if (m := _LABEL_DEF.match(ln))}
+    # Numeric local labels (`1:` with `jz 1f`) may repeat, so they work in
+    # inline asm as they are; only named labels need renaming.
+    labels = {m.group(1) for ln in lines if (m := _LABEL_DEF.match(ln)) and not m.group(1).isdigit()}
     if labels:
         alts = "|".join(re.escape(lb) for lb in sorted(labels, key=len, reverse=True))
         pat = re.compile(rf"(?<![\w.$])({alts})(?![\w$])")
