@@ -20,13 +20,14 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
   assemble ─► ISA check ─► differential test ─► llvm-mca ─► measured latency ─► SMT proof
                     │  counterexamples fed back to the model
                     ▼
-        best verified candidates ─► drop-in inline-asm patch
+        best verified candidates ─► oqed.lock ─► CC=oqed-cc make  (planned)
 ```
 
 - **Models:** `muse-spark-1.3` ([Meta Model API](https://dev.meta.ai/docs/overview)) generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history when progress stalls. Muse Spark Open (`meta-models/muse-spark-open-1026` on [Baseten](https://docs.baseten.co)) can run the volume tier instead.
 - **Correctness first:** "proven equivalent" is claimed only when symbolic execution (angr/VEX) plus Z3 shows the candidate matches the reference for every ABI-valid input: return value at its width, callee-saved registers and stack pointer. Loops, non-stack memory, instructions with undefined results (`bsf`/`bsr` on zero) and solver timeouts give "unknown", shown as **tested, not proven**. SMT counterexamples are replayed on the CPU. `tests/test_verify.py` holds a suite of deliberately wrong rewrites (wrapping shift counts, reading undefined upper register bits, off-by-one, wrong flag, wrong sign extension, clobbered `rbx`, unbalanced stack, a bug on a single input that random testing misses, ...), and none may be proven.
 - **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
 - **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
+- **No assembly in your codebase** (planned): `oqed optimize` records verified winners in a reviewable `oqed.lock`, and `oqed-cc` is a drop-in compiler wrapper (`CC=oqed-cc make`) that applies them at build time without network calls. It falls back to the original C whenever the source, compiler or flags change, and whenever a substitution would stop the compiler from auto-vectorizing a loop.
 
 ## Quick start
 
