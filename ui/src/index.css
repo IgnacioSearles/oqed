@@ -1,0 +1,92 @@
+@import "tailwindcss";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/700.css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Boxy, tool-like palette: hard 1px borders, flat panels, muted color used
+   only where it carries meaning (oqed's code, proof status). */
+:root {
+  color-scheme: light;
+  --bg: #f3f2ee;
+  --panel: #fdfdfb;
+  --panel-head: #e9e8e2;
+  --rule: #1f1f1d; /* panel borders */
+  --rule-soft: #d6d4cd; /* row separators */
+  --ink: #1b1b19;
+  --ink-2: #4c4b47;
+  --ink-3: #85837c;
+  --accent: #34638f; /* oqed */
+  --accent-bg: #e3ebf3;
+  --accent-bar: #4a7aa8;
+  --neutral-bar: #b1aea5;
+  --minus-bg: #f1eeea;
+  --good: #2f6b34;
+  --good-bg: #e2eedf;
+  --warn: #7d5a0f;
+  --warn-bg: #f4ead2;
+  --bad: #9a3a32;
+  --select: #dcdad2;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f100f;
+  --panel: #161716;
+  --panel-head: #20221f;
+  --rule: #4a4c48;
+  --rule-soft: #2c2e2b;
+  --ink: #e7e5de;
+  --ink-2: #b5b3aa;
+  --ink-3: #7c7a73;
+  --accent: #8fb3d9;
+  --accent-bg: #1c2a38;
+  --accent-bar: #6f97c2;
+  --neutral-bar: #55574f;
+  --minus-bg: #1b1c1a;
+  --good: #8cc78f;
+  --good-bg: #1c2b1d;
+  --warn: #d8b664;
+  --warn-bg: #2d2615;
+  --bad: #e08a80;
+  --select: #2a2c29;
+}
+
+@theme inline {
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: var(--font-mono);
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-head: var(--panel-head);
+  --color-rule: var(--rule);
+  --color-rule-soft: var(--rule-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-bg: var(--accent-bg);
+  --color-minus-bg: var(--minus-bg);
+  --color-good: var(--good);
+  --color-good-bg: var(--good-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-bad: var(--bad);
+  --color-select: var(--select);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  /* Code must show the characters typed: no `|=` -> ⊨ style ligatures. */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

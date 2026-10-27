@@ -6,7 +6,7 @@ oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C function, i
 
 Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
-> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing and SMT verifier work end to end. The UI is not built yet. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier and the result view of the UI work end to end. The live search view, replay controls and the build integration are not built yet. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 
@@ -48,6 +48,14 @@ uv run pytest && (cd harness && cargo test)
 
 Set `OQED_BENCH_CPU=<n>` to pin benchmarks to one core.
 
+### UI
+
+```sh
+cd ui && npm install
+npm run dev      # http://localhost:5173, serves every run in runs/
+npm run build    # static site in ui/dist with the curated runs in runs/demo/
+```
+
 ## Layout
 
 ```
@@ -55,6 +63,7 @@ src/oqed/      orchestrator: search loop, providers, prompts, testing, toolchain
 harness/       Rust (PyO3) extension: runs and times candidates in a forked, sandboxed child
 benchmarks/    one directory per target: func.c + meta.toml
 tests/         test suite
+ui/            web UI (Vite + React + TypeScript + Tailwind), reads runs/*.jsonl
 runs/          JSONL event logs (curated demo runs in runs/demo/)
 ```
 
