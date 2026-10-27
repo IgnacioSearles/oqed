@@ -1,6 +1,15 @@
 import { useMemo } from "react";
 import { diffLines, type LineMark } from "../diff";
-import { type FunctionView, bestCompiler, headlineSpeedup, instructionLines, modelLabel } from "../model";
+import {
+  type FunctionView,
+  bestCompiler,
+  fmtTokens,
+  fmtUsd,
+  headlineSpeedup,
+  instructionLines,
+  modelLabel,
+  usage,
+} from "../model";
 import { AsmColumn } from "./AsmColumn";
 import { LatencyBars, type MeasurementRow } from "./LatencyBars";
 import { Panel } from "./Panel";
@@ -14,6 +23,7 @@ export function ResultView({ fn }: { fn: FunctionView }) {
   const faster = bestCompiler(fn);
   const speedup = headlineSpeedup(fn);
   const bar = faster.baseline.cycles?.median;
+  const spend = usage(fn.candidates).total;
   // The best is proven-first; a faster candidate that could only be tested is worth naming.
   const unproven = fn.candidates
     .filter((c) => c.status === "tested_only" && c.cycles && best?.cycles && c.cycles.median < best.cycles.median)
@@ -102,6 +112,16 @@ export function ResultView({ fn }: { fn: FunctionView }) {
               <div className="text-ink-2">
                 {modelLabel(best.model)} ({best.tier === "reasoning" ? "reasoning" : "volume"} tier), candidate{" "}
                 {best.n} of {fn.candidates.length}
+              </div>
+            </>
+          )}
+          {spend.calls > 0 && (
+            <>
+              <div className="text-ink-3">search cost</div>
+              <div className="text-ink-2">
+                {spend.cost != null ? `${fmtUsd(spend.cost)} · ` : ""}
+                {fmtTokens(spend.tokensIn + spend.tokensOut)} tokens over {spend.calls} model calls
+                {spend.cost != null && <span className="text-ink-3"> (list-price estimate)</span>}
               </div>
             </>
           )}

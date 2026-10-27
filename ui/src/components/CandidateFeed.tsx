@@ -1,5 +1,5 @@
 import type { Candidate, FunctionView } from "../model";
-import { modelLabel } from "../model";
+import { fmtTokens, fmtUsd, modelLabel } from "../model";
 import { Panel } from "./Panel";
 
 const STAGE: Record<string, string> = {
@@ -90,6 +90,13 @@ export function CandidateFeed({ fn }: { fn: FunctionView }) {
                 <span className="block text-ink-3">
                   {r.c.tier === "reasoning" ? "◇ " : ""}
                   {modelLabel(r.c.model)}
+                  {r.c.tokensOut != null && (
+                    <span>
+                      {" "}
+                      · {fmtTokens((r.c.tokensIn ?? 0) + r.c.tokensOut)} tokens
+                      {r.c.cost != null && ` · ${fmtUsd(r.c.cost)}`}
+                    </span>
+                  )}
                   {fn.best?.id === r.c.id && <span className="font-bold text-accent"> · best</span>}
                 </span>
                 <span className="block text-ink">{r.c.explanation || <span className="text-ink-3">(no explanation)</span>}</span>

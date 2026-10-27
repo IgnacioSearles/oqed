@@ -58,6 +58,7 @@ export interface CandidateProposed extends Base {
   model_ms?: number | null;
   tokens_in?: number | null;
   tokens_out?: number | null;
+  cost_usd?: number | null; // list-price estimate, logged since the spending cap was added
 }
 
 export interface CandidateRejected extends Base {
@@ -123,11 +124,13 @@ export interface FunctionSummary {
   speedup_vs_clang: number | null;
   speedup_vs_gcc: number | null;
   candidates: number;
+  cost_usd?: number | null;
 }
 
 export interface RunFinished extends Base {
   type: "run_finished";
   summary: Record<string, FunctionSummary>;
+  cost_usd?: number | null;
 }
 
 export type RunEvent =

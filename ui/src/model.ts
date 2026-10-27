@@ -19,6 +19,9 @@ export interface Candidate {
   asm: string;
   explanation: string;
   parentId: string | null;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  cost: number | null; // USD; null when the model's price is unknown
   rejected?: { stage: RejectStage; reason: string; counterexample: Record<string, number> | null };
   status?: ProofStatus;
   statusReason?: string | null;
@@ -75,6 +78,9 @@ export function buildRun(events: RunEvent[]): RunView {
       asm: e.asm,
       explanation: e.explanation,
       parentId: e.parent_id,
+      tokensIn: e.tokens_in ?? null,
+      tokensOut: e.tokens_out ?? null,
+      cost: e.cost_usd ?? estimateCost(e.model, e.tokens_in, e.tokens_out),
     };
     fn.candidates.push(c);
     cands.set(c.id, c);
@@ -243,4 +249,64 @@ export function funnel(fn: FunctionView): { proposed: number; rows: FunnelRow[];
     proven: fn.candidates.filter((c) => c.status === "proven").length,
     tested: fn.candidates.filter((c) => c.status === "tested_only").length,
   };
+}
+
+/** USD per million tokens (input, output), mirroring oqed.providers. List
+ * prices without the cached-input discount, so estimates err high. */
+const PRICES: Record<string, [number, number]> = {
+  "muse-spark-1.3": [1.25, 4.25],
+  "muse-spark-1.3-contributor": [0.1, 0.2],
+  "muse-wonder-1.0": [4, 20],
+};
+
+/** Cost for runs logged before cost_usd was recorded; null when unknown. */
+function estimateCost(model: string, tin?: number | null, tout?: number | null): number | null {
+  const p = PRICES[model];
+  if (!p || tin == null || tout == null) return null;
+  return (tin * p[0] + tout * p[1]) / 1e6;
+}
+
+export interface UsageRow {
+  model: string;
+  tier: ModelTier;
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+  cost: number | null; // null if any call had no known price
+}
+
+/** Model calls, tokens and spend per model, in the order models first appear. */
+export function usage(candidates: Candidate[]): { rows: UsageRow[]; total: UsageRow } {
+  const by = new Map<string, UsageRow>();
+  for (const c of candidates) {
+    let r = by.get(c.model);
+    if (!r) {
+      r = { model: c.model, tier: c.tier, calls: 0, tokensIn: 0, tokensOut: 0, cost: 0 };
+      by.set(c.model, r);
+    }
+    r.calls += 1;
+    r.tokensIn += c.tokensIn ?? 0;
+    r.tokensOut += c.tokensOut ?? 0;
+    r.cost = r.cost == null || c.cost == null ? null : r.cost + c.cost;
+  }
+  const rows = [...by.values()];
+  const priced = rows.filter((r) => r.cost != null);
+  const total: UsageRow = {
+    model: "total",
+    tier: "volume",
+    calls: rows.reduce((a, r) => a + r.calls, 0),
+    tokensIn: rows.reduce((a, r) => a + r.tokensIn, 0),
+    tokensOut: rows.reduce((a, r) => a + r.tokensOut, 0),
+    cost: priced.length ? priced.reduce((a, r) => a + r.cost!, 0) : null,
+  };
+  return { rows, total };
+}
+
+export function fmtTokens(n: number): string {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+}
+
+export function fmtUsd(v: number | null): string {
+  if (v == null) return "—";
+  return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
 }

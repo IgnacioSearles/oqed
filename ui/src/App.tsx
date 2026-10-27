@@ -4,7 +4,7 @@ import { Panel } from "./components/Panel";
 import { ResultView } from "./components/ResultView";
 import { SearchView } from "./components/SearchView";
 import { type RunEvent, type RunIndexEntry, parseJsonl } from "./events";
-import { buildRun, modelLabel } from "./model";
+import { buildRun, fmtUsd, modelLabel, usage } from "./model";
 import { countUntil, useReplay } from "./replay";
 
 type Theme = "light" | "dark";
@@ -60,6 +60,7 @@ export default function App() {
   }, [entry]);
 
   const run = useMemo(() => (events ? buildRun(events) : null), [events]);
+  const runCost = useMemo(() => (run ? usage(run.functions.flatMap((f) => f.candidates)).total.cost : null), [run]);
   const fn = run?.functions.find((f) => f.id === fnId) ?? run?.functions[0];
   // Local runs still in progress: re-read the log until it finishes.
   const live = Boolean(entry && run && !run.finished && !entry.demo);
@@ -121,7 +122,12 @@ export default function App() {
         <span className="text-base font-bold">oqed</span>
         <span className="text-ink-3">faster than -O3. proven equivalent.</span>
         <span className="ml-auto flex items-center gap-3 text-ink-3">
-          {run && <span className="hidden truncate md:inline">run {run.id}</span>}
+          {run && (
+            <span className="hidden truncate md:inline">
+              run {run.id}
+              {runCost != null && runCost > 0 && ` · ${fmtUsd(runCost)}`}
+            </span>
+          )}
           <span className="flex" role="group" aria-label="view">
             {(["result", "search"] as const).map((v) => (
               <button
