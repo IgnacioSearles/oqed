@@ -6,7 +6,7 @@ oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C function, i
 
 Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
-> **Status: early development.** The baseline pipeline, benchmark set, and event log are in place. The search loop, harness, verifier, and UI are not built yet. No speedup or proof claims are made until they are measured and verified.
+> **Status: early development.** The model-guided search loop, sandboxed Rust harness, and differential testing work end to end. The SMT verifier and the UI are not built yet, so every result is currently **tested, not proven**. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 
@@ -23,29 +23,35 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
         best verified candidates ─► drop-in inline-asm patch
 ```
 
-- **Models:** both tiers use the [Meta Model API](https://dev.meta.ai/docs/overview). `muse-spark-1.3` generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history when progress stalls.
+- **Models:** `muse-spark-1.3` ([Meta Model API](https://dev.meta.ai/docs/overview)) generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history when progress stalls. Muse Spark Open (`meta-models/muse-spark-open-1026` on [Baseten](https://docs.baseten.co)) can run the volume tier instead.
 - **Correctness first:** "proven equivalent" is claimed only for loop-free code that passes symbolic equivalence checking (angr + Z3). Anything else is labeled "tested, not proven". The verifier will ship with a suite of deliberately wrong rewrites it must reject.
 - **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
 - **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
 
 ## Quick start
 
-Requires Linux x86-64, [uv](https://docs.astral.sh/uv/), clang, gcc, binutils, and `llvm-mca`.
+Requires Linux x86-64, [uv](https://docs.astral.sh/uv/), a Rust toolchain, clang, gcc, binutils, and `llvm-mca`. `uv sync` builds the Rust harness.
 
 ```sh
 uv sync
-cp .env.example .env              # add your MODEL_API_KEY
+cp .env.example .env              # add MODEL_API_KEY (and BASETEN_API_KEY for Muse Spark Open)
 
+uv run oqed search round_up_pow2_u32      # model-guided search, events in runs/<id>.jsonl
+uv run oqed search parity_u32 --volume spark-open
+uv run oqed try round_up_pow2_u32 my.s    # check a hand-written candidate
 uv run oqed baseline round_up_pow2_u32    # clang/gcc output + llvm-mca estimates
 uv run oqed scout                         # baseline table for every target
 uv run oqed fake-run                      # synthetic run log for UI development
-uv run pytest
+uv run pytest && (cd harness && cargo test)
 ```
+
+Set `OQED_BENCH_CPU=<n>` to pin benchmarks to one core.
 
 ## Layout
 
 ```
-src/oqed/      orchestrator: targets, toolchain wrappers, ISA check, event schema, CLI
+src/oqed/      orchestrator: search loop, providers, prompts, testing, toolchain wrappers, ISA check, events, CLI
+harness/       Rust (PyO3) extension: runs and times candidates in a forked, sandboxed child
 benchmarks/    one directory per target: func.c + meta.toml
 tests/         test suite
 runs/          JSONL event logs (curated demo runs in runs/demo/)

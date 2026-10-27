@@ -89,5 +89,81 @@ def try_cmd(name: str, asm_file: Path, march: str = DEFAULT_MARCH):
         )
 
 
+def _print_event(e) -> None:
+    fn = getattr(e, "function_id", "") or ""
+    match e.type:
+        case "baseline_ready":
+            typer.secho(
+                f"[{fn}] baseline latency: clang {e.clang.cycles.median:.2f}, "
+                f"gcc {e.gcc.cycles.median:.2f} ticks/call",
+                bold=True,
+            )
+        case "candidate_proposed":
+            tier = "R" if e.model_tier == "reasoning" else "v"
+            typer.echo(
+                f"[{fn}] {e.candidate_id} {tier} {e.model} ({(e.model_ms or 0) / 1000:.1f}s): {e.explanation}"
+            )
+        case "candidate_rejected":
+            ce = f" {e.counterexample}" if e.counterexample else ""
+            typer.secho(f"[{fn}]   x {e.stage}: {e.reason}{ce}", fg="red")
+        case "candidate_benchmarked":
+            typer.echo(
+                f"[{fn}]   {e.cycles.median:.2f} ± {e.cycles.spread:.2f} ticks/call "
+                f"(x{e.speedup_vs_clang} vs clang, x{e.speedup_vs_gcc} vs gcc)"
+            )
+        case "new_best":
+            typer.secho(
+                f"[{fn}]   * new best: {e.candidate_id} (tested, not yet proven)", fg="green", bold=True
+            )
+        case "search_stalled":
+            typer.secho(
+                f"[{fn}] stalled for {e.rounds_without_improvement}; calling reasoning tier", fg="yellow"
+            )
+        case "run_finished":
+            for name, s in e.summary.items():
+                sp = (
+                    f"x{s.speedup_vs_clang} vs clang, x{s.speedup_vs_gcc} vs gcc"
+                    if s.best_candidate_id
+                    else "no win"
+                )
+                typer.secho(f"{name}: {sp} ({s.status or '-'}, {s.candidates} candidates)", bold=True)
+
+
+@app.command()
+def search(
+    targets: list[str] = typer.Argument(..., help="benchmark names"),
+    volume: str = typer.Option("spark", help="volume-tier model (see oqed.providers.MODELS)"),
+    reasoning: str = typer.Option("wonder", help="reasoning-tier model"),
+    candidates: int = 24,
+    concurrency: int = 8,
+    stall_after: int = 8,
+    volume_effort: str = "low",
+    reasoning_effort: str = "high",
+):
+    """Run the model-guided search on one or more targets."""
+    import asyncio
+
+    from .providers import get_provider
+    from .search import SearchConfig, run_search
+
+    cfg = SearchConfig(
+        candidates=candidates,
+        concurrency=concurrency,
+        stall_after=stall_after,
+        volume_effort=volume_effort,
+        reasoning_effort=reasoning_effort,
+    )
+    run_id = asyncio.run(
+        run_search(
+            [load_target(n) for n in targets],
+            get_provider(volume),
+            get_provider(reasoning),
+            cfg,
+            on_event=_print_event,
+        )
+    )
+    typer.echo(f"run log: runs/{run_id}.jsonl")
+
+
 def main() -> None:
     app()

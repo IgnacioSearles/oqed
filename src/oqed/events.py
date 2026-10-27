@@ -4,13 +4,14 @@ source of truth for the UI and for replay."""
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
 ModelTier = Literal["volume", "reasoning"]
-RejectStage = Literal["assemble", "test", "verify", "estimate", "benchmark"]
+RejectStage = Literal["parse", "duplicate", "assemble", "isa", "test", "verify", "estimate", "benchmark"]
 ProofStatus = Literal["proven", "tested_only"]
 
 RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
@@ -59,6 +60,9 @@ class CandidateProposed(_Event):
     model: str
     asm: str
     explanation: str
+    model_ms: float | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
 
 
 class CandidateRejected(_Event):
@@ -81,7 +85,9 @@ class CandidateBenchmarked(_Event):
     type: Literal["candidate_benchmarked"] = "candidate_benchmarked"
     function_id: str
     candidate_id: str
-    cycles: Cycles
+    cycles: Cycles  # latency per call, TSC ticks
+    mca_latency: float | None = None
+    mca_rthroughput: float | None = None
     speedup_vs_clang: float
     speedup_vs_gcc: float
     speedup_vs_reference: float | None = None
@@ -146,10 +152,13 @@ class EventLog:
         self.run_id = run_id
         self.path = runs_dir / f"{run_id}.jsonl"
         self._f = self.path.open("a")
+        self.listeners: list[Callable[[_Event], None]] = []
 
     def emit(self, event: _Event) -> None:
         self._f.write(event.model_dump_json() + "\n")
         self._f.flush()
+        for listener in self.listeners:
+            listener(event)
 
     def close(self) -> None:
         self._f.close()

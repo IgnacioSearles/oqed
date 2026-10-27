@@ -49,6 +49,7 @@ pub struct BenchOutcome {
 #[derive(Debug, Clone, Copy)]
 pub enum Error {
     EmptyCode,
+    NoInputs,
     Sys(nix::Error),
     Io,
 }
@@ -190,12 +191,12 @@ pub fn execute(code: &[u8], inputs: &[Args], timeout: Duration) -> Result<ExecOu
     })
 }
 
-/// Time `code` on one argument tuple: `warmup + reps` repetitions of
+/// Time `code` cycling through `inputs`: `warmup + reps` repetitions of
 /// `iters` calls each, optionally pinned to one CPU.
 #[allow(clippy::too_many_arguments)]
 pub fn bench(
     code: &[u8],
-    args: Args,
+    inputs: &[Args],
     iters: u64,
     reps: usize,
     warmup: usize,
@@ -203,6 +204,9 @@ pub fn bench(
     cpu: Option<usize>,
     timeout: Duration,
 ) -> Result<BenchOutcome, Error> {
+    if inputs.is_empty() {
+        return Err(Error::NoInputs);
+    }
     let code = map_code(code)?;
     let shared = Shared::new(reps * size_of::<f64>())?;
     let samples: *mut f64 = shared.as_mut();
@@ -218,7 +222,15 @@ pub fn bench(
         }
         for r in 0..warmup + reps {
             // SAFETY: as in `execute`; only called on code that passed testing.
-            let ticks = unsafe { oqed_time(code.as_ptr(), &args, iters, latency as u64) };
+            let ticks = unsafe {
+                oqed_time(
+                    code.as_ptr(),
+                    inputs.as_ptr(),
+                    inputs.len() as u64,
+                    iters,
+                    latency as u64,
+                )
+            };
             if r >= warmup {
                 unsafe { samples.add(r - warmup).write(ticks as f64 / iters as f64) };
             }

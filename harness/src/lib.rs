@@ -14,11 +14,12 @@ mod oqed_harness {
     use pyo3::prelude::*;
 
     use crate::exec::{self, Error, Status};
-    use crate::trampoline::CLOBBER_NAMES;
+    use crate::trampoline::{Args, CLOBBER_NAMES};
 
     fn to_py_err(e: Error) -> PyErr {
         match e {
             Error::EmptyCode => PyValueError::new_err("empty machine code"),
+            Error::NoInputs => PyValueError::new_err("no inputs"),
             Error::Sys(e) => PyOSError::new_err(e.to_string()),
             Error::Io => PyOSError::new_err("failed to map executable memory"),
         }
@@ -54,6 +55,20 @@ mod oqed_harness {
         samples: Vec<f64>,
     }
 
+    fn to_args(inputs: &[Vec<u64>]) -> PyResult<Vec<Args>> {
+        inputs
+            .iter()
+            .map(|v| {
+                if v.len() > 4 {
+                    return Err(PyValueError::new_err("at most 4 arguments are supported"));
+                }
+                let mut a = [0u64; 4];
+                a[..v.len()].copy_from_slice(v);
+                Ok(a)
+            })
+            .collect()
+    }
+
     /// Call `code` once per input. `inputs` is a list of argument tuples
     /// (up to 4 unsigned 64-bit values, passed in rdi, rsi, rdx, rcx).
     #[pyfunction]
@@ -64,17 +79,7 @@ mod oqed_harness {
         inputs: Vec<Vec<u64>>,
         timeout_ms: u64,
     ) -> PyResult<ExecResult> {
-        let args = inputs
-            .iter()
-            .map(|v| {
-                if v.len() > 4 {
-                    return Err(PyValueError::new_err("at most 4 arguments are supported"));
-                }
-                let mut a = [0u64; 4];
-                a[..v.len()].copy_from_slice(v);
-                Ok(a)
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+        let args = to_args(&inputs)?;
         let out = py
             .detach(|| exec::execute(&code, &args, Duration::from_millis(timeout_ms)))
             .map_err(to_py_err)?;
@@ -98,17 +103,17 @@ mod oqed_harness {
         })
     }
 
-    /// Time `code` on one argument tuple. Each sample is the mean TSC ticks
-    /// per call over `iters` back-to-back calls. With `latency=True` each
-    /// call's result feeds the next call's first argument (dependent chain);
-    /// otherwise calls are independent (throughput).
+    /// Time `code`, cycling through the argument tuples in `inputs`. Each
+    /// sample is the mean TSC ticks per call over `iters` back-to-back calls.
+    /// With `latency=True` each call depends on the previous call's result
+    /// (dependent chain); otherwise calls are independent (throughput).
     #[pyfunction]
-    #[pyo3(signature = (code, args, iters = 1000, reps = 101, warmup = 10, latency = false, cpu = None, timeout_ms = 5000))]
+    #[pyo3(signature = (code, inputs, iters = 1000, reps = 101, warmup = 10, latency = false, cpu = None, timeout_ms = 5000))]
     #[allow(clippy::too_many_arguments)]
     fn bench(
         py: Python<'_>,
         code: Vec<u8>,
-        args: Vec<u64>,
+        inputs: Vec<Vec<u64>>,
         iters: u64,
         reps: usize,
         warmup: usize,
@@ -116,16 +121,12 @@ mod oqed_harness {
         cpu: Option<usize>,
         timeout_ms: u64,
     ) -> PyResult<BenchResult> {
-        if args.len() > 4 {
-            return Err(PyValueError::new_err("at most 4 arguments are supported"));
-        }
-        let mut a = [0u64; 4];
-        a[..args.len()].copy_from_slice(&args);
+        let args = to_args(&inputs)?;
         let out = py
             .detach(|| {
                 exec::bench(
                     &code,
-                    a,
+                    &args,
                     iters,
                     reps,
                     warmup,
@@ -212,7 +213,7 @@ mod tests {
     fn bench_produces_samples() {
         let out = bench(
             IDENTITY,
-            [1, 0, 0, 0],
+            &[[1, 0, 0, 0], [2, 0, 0, 0]],
             1000,
             21,
             3,
@@ -228,7 +229,7 @@ mod tests {
 
     #[test]
     fn bench_crash_is_reported() {
-        let out = bench(&[0x0f, 0x0b], [0; 4], 10, 5, 0, false, None, T).unwrap();
+        let out = bench(&[0x0f, 0x0b], &[[0; 4]], 10, 5, 0, false, None, T).unwrap();
         assert_eq!(out.status, Status::Crashed);
         assert!(out.samples.is_empty());
     }

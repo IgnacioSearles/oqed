@@ -2,7 +2,9 @@
 //!
 //! `oqed_call` calls a candidate once under the System V ABI and reports
 //! whether it preserved the callee-saved registers and the stack pointer.
-//! `oqed_time` calls it in a tight loop between serialized `rdtsc` reads.
+//! `oqed_time` calls it in a tight loop between serialized `rdtsc` reads,
+//! cycling through an array of inputs so branchy code can't win by having one
+//! perfectly predicted input.
 
 use std::arch::global_asm;
 
@@ -23,9 +25,12 @@ pub const CLOBBER_NAMES: [&str; 7] = ["rbx", "rbp", "r12", "r13", "r14", "r15", 
 
 unsafe extern "C" {
     pub fn oqed_call(f: *const u8, args: *const Args, out: *mut CallOut);
-    /// Returns elapsed TSC ticks for `n` calls. With `latency != 0` each
-    /// call's rax is fed back as the next call's first argument.
-    pub fn oqed_time(f: *const u8, args: *const Args, n: u64, latency: u64) -> u64;
+    /// Returns elapsed TSC ticks for `n` calls, cycling through `count`
+    /// argument tuples. With `latency != 0` each call's first argument is
+    /// `args[i].0 + (previous rax & 0)`, so calls form a dependency chain
+    /// (with a fixed overhead of `and` + `add` per call) while still seeing
+    /// the input values unchanged.
+    pub fn oqed_time(f: *const u8, args: *const Args, count: u64, n: u64, latency: u64) -> u64;
 }
 
 // Canary values loaded into callee-saved registers before the call. Argument
@@ -127,34 +132,48 @@ oqed_time:
     push r15
     sub rsp, 8
     mov r12, rdi
+    mov [rsp], rsi
     mov r14, rsi
-    mov r13, rdx
-    mov rbp, rcx
-    mov r15, [r14]
+    shl rdx, 5
+    lea r15, [rsi + rdx]
+    mov r13, rcx
+    mov rbp, r8
     lfence
     rdtsc
     shl rdx, 32
     or rax, rdx
     mov rbx, rax
     lfence
+    xor eax, eax
     test rbp, rbp
     jnz 3f
 2:
-    mov rdi, r15
+    mov rdi, [r14]
     mov rsi, [r14 + 8]
     mov rdx, [r14 + 16]
     mov rcx, [r14 + 24]
     call r12
+    add r14, 32
+    cmp r14, r15
+    jne 1f
+    mov r14, [rsp]
+1:
     dec r13
     jnz 2b
     jmp 4f
 3:
-    mov rdi, r15
+    and rax, 0
+    add rax, [r14]
+    mov rdi, rax
     mov rsi, [r14 + 8]
     mov rdx, [r14 + 16]
     mov rcx, [r14 + 24]
     call r12
-    mov r15, rax
+    add r14, 32
+    cmp r14, r15
+    jne 1f
+    mov r14, [rsp]
+1:
     dec r13
     jnz 3b
 4:

@@ -153,15 +153,34 @@ def bench_cpu() -> int | None:
     return int(v) if v else None
 
 
-def bench_args(target: Target, seed: int = 1) -> list[int]:
-    """A fixed, ordinary input for timing (the same for every candidate)."""
+BENCH_INPUTS = 1024
+
+
+def bench_inputs(target: Target, seed: int = 1) -> list[list[int]]:
+    """Fixed inputs for timing, the same for every candidate: half uniform over
+    each argument's type, half small magnitudes (|v| < 1024), shuffled so
+    branchy code sees unpredictable branches."""
     rng = random.Random(seed)
-    return [to_register(_wrap(rng.getrandbits(bit_width(t)), t), t, 0) for t in target.args]
+    out = []
+    for i in range(BENCH_INPUTS):
+        args = []
+        for t in target.args:
+            if i % 2:
+                v = _wrap(rng.getrandbits(bit_width(t)), t)
+            else:
+                v = rng.randrange(-1023, 1024) if is_signed(t) else rng.randrange(1024)
+            args.append(to_register(v, t, 0))
+        out.append(args)
+    rng.shuffle(out)
+    return out
 
 
-def measure(code: bytes, target: Target, latency: bool = True, reps: int = 101, iters: int = 2000) -> Cycles:
-    """TSC ticks per call, median and interquartile range over `reps` samples."""
-    r = oqed_harness.bench(code, bench_args(target), iters=iters, reps=reps, latency=latency, cpu=bench_cpu())
+def measure(code: bytes, target: Target, latency: bool = True, reps: int = 101, iters: int = 4096) -> Cycles:
+    """TSC ticks per call (call overhead included), median and interquartile
+    range over `reps` samples, each averaging `iters` calls over `bench_inputs`."""
+    r = oqed_harness.bench(
+        code, bench_inputs(target), iters=iters, reps=reps, latency=latency, cpu=bench_cpu()
+    )
     if r.status != "ok":
         raise RuntimeError(f"benchmark failed: {r.status}")
     q1, med, q3 = statistics.quantiles(r.samples, n=4)
