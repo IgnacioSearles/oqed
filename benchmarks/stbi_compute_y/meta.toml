@@ -1,0 +1,7 @@
+function = "stbi__compute_y"
+category = "image"
+args = ["i32", "i32", "i32"]
+ret = "u8"
+loop_free = true
+source = "stb_image v2.30 (nothings/stb@003501f) by Sean Barrett, RGB to luma, per pixel when loading as grayscale"
+license = "public-domain (or MIT)"

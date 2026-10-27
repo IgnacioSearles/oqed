@@ -1,0 +1,7 @@
+function = "stbi__bitreverse16"
+category = "bits"
+args = ["i32"]
+ret = "i32"
+loop_free = true
+source = "stb_image v2.30 (nothings/stb@003501f) by Sean Barrett, zlib Huffman table construction"
+license = "public-domain (or MIT)"

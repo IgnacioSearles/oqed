@@ -1,0 +1,7 @@
+function = "stbi__high_bit"
+category = "bits"
+args = ["u32"]
+ret = "i32"
+loop_free = true
+source = "stb_image v2.30 (nothings/stb@003501f) by Sean Barrett, BMP bitfield mask parsing"
+license = "public-domain (or MIT)"

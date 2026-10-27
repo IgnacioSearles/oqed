@@ -1,0 +1,7 @@
+function = "stbi__blinn_8x8"
+category = "image"
+args = ["u8", "u8"]
+ret = "u8"
+loop_free = true
+source = "stb_image v2.30 (nothings/stb@003501f) by Sean Barrett, 8-bit multiply with rounding, per channel for CMYK JPEGs"
+license = "public-domain (or MIT)"

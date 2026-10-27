@@ -1,0 +1,7 @@
+function = "stbi__clamp"
+category = "clip"
+args = ["i32"]
+ret = "u8"
+loop_free = true
+source = "stb_image v2.30 (nothings/stb@003501f) by Sean Barrett, JPEG IDCT output clamp, 8 calls per IDCT row"
+license = "public-domain (or MIT)"
