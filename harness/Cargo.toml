@@ -1,0 +1,17 @@
+[package]
+name = "oqed_harness"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Enabled by maturin; off for `cargo test`, which links libpython normally.
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+libc = "0.2.191"
+memmap2 = "0.9.12"
+nix = { version = "0.31.3", features = ["process", "signal", "sched", "mman", "resource"] }
+pyo3 = "0.30.1"
