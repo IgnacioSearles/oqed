@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FunctionView } from "../model";
-import { modelLabel } from "../model";
+import { latencyUnit, modelLabel } from "../model";
 import { Panel } from "./Panel";
 
 const W = 720;
@@ -55,7 +55,7 @@ export function ProgressChart({ fn, full }: { fn: FunctionView; full: FunctionVi
   }
 
   return (
-    <Panel title="Progress" right="latency per measured candidate · TSC ticks/call">
+    <Panel title="Progress" right={`latency per measured candidate · ${latencyUnit(fn)}`}>
       <div className="relative overflow-x-auto px-1 py-1">
         <svg viewBox={`0 0 ${W} ${H}`} className="block w-full min-w-[560px]" role="img" aria-label="latency of candidates over the search">
           {ticks.map((t) => (

@@ -83,18 +83,22 @@ class SearchState:
     best_report: str | None = None  # llvm-mca bottleneck analysis of the current best
 
 
-def target_context(target: Target, baselines: list[BaselineInfo], mca_report: str) -> str:
+def target_context(
+    target: Target, baselines: list[BaselineInfo], mca_report: str, latency_note: str = ""
+) -> str:
     parts = [
         f"Function to optimize:\n```c\n{target.c_source.strip()}\n```",
         f"Signature: `{c_signature(target)}`. {_type_notes(target)}",
     ]
     for b in baselines:
-        m = f", measured {b.measured_latency:.2f} TSC ticks/call" if b.measured_latency else ""
+        m = f", measured {b.measured_latency:.2f} TSC ticks" if b.measured_latency else ""
         parts.append(
             f"{b.compiler} -O3 -march=x86-64-v3 output (llvm-mca: latency {b.mca_latency}, "
             f"throughput {b.mca_rthroughput} cycles{m}):\n```asm\n{b.asm.rstrip()}\n```"
         )
     parts.append(f"llvm-mca report for the clang output:\n```\n{mca_report.strip()}\n```")
+    if latency_note:
+        parts.append(latency_note)
     return "\n\n".join(parts)
 
 
@@ -115,7 +119,7 @@ HINTS = [
 
 
 def _listing(c: CandidateInfo, label: str | None = None) -> str:
-    lat = f"{c.measured_latency:.2f} ticks/call" if c.measured_latency else "unmeasured"
+    lat = f"{c.measured_latency:.2f} ticks" if c.measured_latency else "unmeasured"
     status = {"proven": ", proven equivalent", "tested_only": ", tested"}.get(c.status or "", "")
     head = f"{label}: " if label else "- "
     return f"{head}{c.explanation} ({lat}{status})\n```asm\n{c.asm.rstrip()}\n```"

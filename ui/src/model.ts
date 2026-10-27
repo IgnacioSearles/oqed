@@ -42,6 +42,7 @@ export interface FunctionView {
   bestHistory: { n: number; t: number; latency: number }[]; // each new best, in order
   stalls: { t: number; afterN: number; rounds: number }[];
   stopped: { t: number; afterN: number; reason: string } | null; // converged or hit the spending cap
+  inlined: boolean; // latency measured with the code inlined into a loop (else through call/ret)
   timing: { model: number; harness: number; verifier: number; orchestrator: number };
 }
 
@@ -106,6 +107,7 @@ export function buildRun(events: RunEvent[]): RunView {
           bestHistory: [],
           stalls: [],
           stopped: null,
+          inlined: run.config.bench === "inline",
           timing: { model: 0, harness: 0, verifier: 0, orchestrator: 0 },
         };
         fns.set(fn.id, fn);
@@ -207,6 +209,11 @@ export function instructionLines(asm: string): string[] {
     .filter(Boolean);
 }
 
+/** Latency unit for axis and table labels. */
+export function latencyUnit(fn: FunctionView): string {
+  return fn.inlined ? "TSC ticks/iteration, inlined" : "TSC ticks/call";
+}
+
 /** Pipeline stages in the order the search runs them, with the rejection
  * stage that filters candidates out at each step. */
 export const FUNNEL: { stage: RejectStage; label: string }[] = [
@@ -216,6 +223,7 @@ export const FUNNEL: { stage: RejectStage; label: string }[] = [
   { stage: "isa", label: "allowed ISA" },
   { stage: "test", label: "passes tests" },
   { stage: "estimate", label: "llvm-mca sane" },
+  { stage: "inline", label: "inlinable" },
   { stage: "benchmark", label: "beats -O3" },
   { stage: "verify", label: "no counterexample" },
 ];

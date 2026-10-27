@@ -14,13 +14,13 @@ export interface MeasurementRow {
 
 /** Profiler-style table of measurements with an inline latency bar: oqed in
  * the accent color, compilers in neutral gray, whisker = interquartile range. */
-export function LatencyBars({ rows }: { rows: MeasurementRow[] }) {
+export function LatencyBars({ rows, unit }: { rows: MeasurementRow[]; unit: string }) {
   const [hover, setHover] = useState<string | null>(null);
   const max = Math.max(...rows.map((r) => r.cycles.median + r.cycles.spread / 2)) * 1.05;
   const pct = (v: number) => `${(v / max) * 100}%`;
 
   return (
-    <Panel title="Measurements" right="latency in TSC ticks/call · lower is faster" bodyClassName="overflow-x-auto">
+    <Panel title="Measurements" right={`latency in ${unit} · lower is faster`} bodyClassName="overflow-x-auto">
       <table className="tabular w-full min-w-[40rem] border-collapse">
         <thead>
           <tr className="border-b border-rule-soft text-left text-ink-3">

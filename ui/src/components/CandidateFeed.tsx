@@ -9,6 +9,7 @@ const STAGE: Record<string, string> = {
   isa: "ISA",
   test: "test",
   estimate: "llvm-mca",
+  inline: "not inlinable",
   benchmark: "not faster",
   verify: "proof",
 };

@@ -114,7 +114,7 @@ def test_prompt_state_shows_parent_and_tried_ideas():
     best = [prompt.CandidateInfo("lzcnt eax, edi\nret\n", "lzcnt trick", 3.7, status="proven")]
     st = prompt.SearchState(best=best, near=[], failures=[], tried=["smear -> wrong for a=0"], parent=0)
     text = prompt.search_state(st, reasoning=False)
-    assert "Parent: lzcnt trick (3.70 ticks/call, proven equivalent)" in text
+    assert "Parent: lzcnt trick (3.70 ticks, proven equivalent)" in text
     assert "- smear -> wrong for a=0" in text
     near = [prompt.CandidateInfo("mov eax, edi\nret\n", "branchless", 6.1)]
     st = prompt.SearchState(best=[], near=near, failures=[], tried=[], parent=0, best_report="R")
@@ -139,3 +139,27 @@ def test_spending_cap_stops_the_run(tmp_path):
     assert 5 <= kinds["candidate_proposed"] <= 5 + cfg.concurrency
     assert 0.5 <= events[-1].cost_usd <= 0.5 + cfg.concurrency * 0.1 + 1e-9
     assert set(events[-1].summary) == {T.name}  # the second function never started
+
+
+def test_stack_using_candidate_is_rejected_as_not_inlinable(tmp_path):
+    # Correct (passes testing and could be proven) but pushes to the stack.
+    stack = GOOD.replace("<asm>\n", "<asm>\npush rbx\npop rbx\n")
+    mock = MockProvider([stack], seed=0)
+    cfg = SearchConfig(candidates=1, concurrency=1, stall_after=100)
+    run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    rej = [e for e in events if e.type == "candidate_rejected"]
+    assert [e.stage for e in rej] == ["inline"]
+    assert rej[0].reason.startswith("not inlinable: uses the stack pointer")
+
+
+def test_inlined_speedups_compare_against_c_in_the_same_loop(tmp_path):
+    mock = MockProvider([GOOD], seed=0)
+    cfg = SearchConfig(candidates=1, concurrency=1, stall_after=100)
+    run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    run = next(e for e in events if e.type == "run_started")
+    assert run.config["bench"] == "inline"
+    b = next(e for e in events if e.type == "candidate_benchmarked")
+    # The lzcnt rewrite is ~3x faster than the smearing C in the dependent loop.
+    assert min(b.speedup_vs_clang, b.speedup_vs_gcc) > 1.5

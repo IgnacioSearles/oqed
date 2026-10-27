@@ -9,6 +9,7 @@ export type RejectStage =
   | "test"
   | "verify"
   | "estimate"
+  | "inline"
   | "benchmark";
 export type ProofStatus = "proven" | "tested_only";
 

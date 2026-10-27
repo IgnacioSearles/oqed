@@ -3,6 +3,12 @@ pipeline (parse, assemble, ISA, differential test, llvm-mca estimate,
 measured latency), and feed the best results and failures back into the
 next prompts. When the search stalls, the reasoning tier is called.
 
+Latency is measured inlined by default (`oqed.inline`): the candidate as an
+asm statement in a loop where each result feeds the next call, against the C
+compiled into the same loop by clang and gcc, in the same run. `bench="call"`
+times through call/ret instead (adds ~4.7 ticks per call and can rank
+candidates wrongly).
+
 Candidates that beat -O3 are then checked by the SMT verifier: `proven` only
 when it decides equivalence, `tested_only` when it can't decide, and rejected
 with a counterexample when it finds one.
@@ -12,14 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import random
+import shutil
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
-from . import harness, prompt
+from . import harness, inline, prompt
 from .baseline import compute as compute_baseline
 from .events import (
     RUNS_DIR,
@@ -44,7 +51,7 @@ from .events import (
 from .isa import forbidden_instructions, isa_violations
 from .providers import Completion, ProviderError
 from .targets import Target, c_signature
-from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, ToolError, assemble, mca
+from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, Compiler, ToolError, assemble, mca
 from .verify import Verifier
 
 
@@ -73,6 +80,7 @@ class SearchConfig:
     verifier_workers: int = 4
     seed: int = 0  # parent selection
     max_usd: float | None = None  # stop the run once model spend reaches this
+    bench: Literal["inline", "call"] = "inline"  # how latency is measured (see module docstring)
     march: str = DEFAULT_MARCH
     mcpu: str = DEFAULT_MCPU
 
@@ -104,6 +112,20 @@ _TRIED = {
     "assemble": "did not assemble",
     "isa": "used a disallowed instruction",
     "estimate": "far slower by llvm-mca",
+    "inline": "not inlinable",
+}
+
+COMPILERS: tuple[Compiler, ...] = ("clang", "gcc")
+_UNIT = {"inline": "ticks/iteration", "call": "ticks/call"}
+LATENCY_NOTE = {
+    "inline": (
+        "Latency is measured with the function inlined as an asm block into a loop where each "
+        "result feeds the next call's first argument (TSC ticks per iteration, one xor of loop "
+        "overhead included), against the C compiled into the same loop. Call and ret cost nothing "
+        "here: what counts is the dependency chain from the arguments to the result. Code that "
+        "touches memory or the stack cannot be inlined and is rejected."
+    ),
+    "call": "Latency is measured through call/ret (TSC ticks per call, call overhead included).",
 }
 
 
@@ -181,12 +203,40 @@ class FunctionSearch:
         async with self.bench_lock:
             return await asyncio.to_thread(harness.measure, code, self.target, True)
 
+    async def _measure_inline(self, asm: str) -> dict[Compiler, inline.InlineResult]:
+        """Build with both compilers in parallel, then time one at a time."""
+        t, march = self.target, self.config.march
+        built = await asyncio.gather(
+            *(asyncio.to_thread(inline.build, asm, t, c, march) for c in COMPILERS), return_exceptions=True
+        )
+        if errs := [b for b in built if isinstance(b, BaseException)]:
+            for b in built:
+                if isinstance(b, inline.Built):
+                    shutil.rmtree(b.dir, ignore_errors=True)
+            raise errs[0]
+        async with self.bench_lock:
+            return {b.compiler: await asyncio.to_thread(inline.run, b) for b in built}
+
+    async def _latency(self, asm: str, code: bytes) -> tuple[Cycles, dict[Compiler, Cycles]]:
+        """The candidate's latency and the C's per compiler. Inlined, the C is
+        timed in the same run, so both see the same machine state."""
+        if self.config.bench == "call":
+            return await self._measure(code), self.base_cycles
+        res = await self._measure_inline(asm)
+        cand = min((r.dep_cand for r in res.values()), key=lambda c: c.median)
+        return cand, {c: r.dep_ref for c, r in res.items()}
+
     async def setup(self) -> None:
         t, cfg = self.target, self.config
         bases = {c: compute_baseline(t, c, cfg.march, cfg.mcpu) for c in ("clang", "gcc")}
         self.ref_code = assemble(bases["clang"].asm)
-        self.base_cycles = {c: await self._measure(assemble(b.asm)) for c, b in bases.items()}
-        self.bar = min(self.base_cycles.values(), key=lambda c: c.median)
+        self.unit = _UNIT[cfg.bench]
+        if cfg.bench == "call":
+            self.base_cycles = {c: await self._measure(assemble(b.asm)) for c, b in bases.items()}
+        else:
+            # The program times the C on its own; the compiler's asm is just a placeholder candidate.
+            res = await self._measure_inline(bases["clang"].asm)
+            self.base_cycles = {c: r.dep_ref for c, r in res.items()}
         # llvm-mca ignores branches, so its latency for branchy baselines is
         # optimistic. The estimate stage only drops clearly worse candidates;
         # the measurement decides.
@@ -204,6 +254,7 @@ class FunctionSearch:
                 for c, b in bases.items()
             ],
             bases["clang"].mca.report,
+            LATENCY_NOTE[cfg.bench],
         )
 
     def _pool(self) -> list[_Member]:
@@ -365,26 +416,30 @@ class FunctionSearch:
             return
 
         t0 = time.perf_counter()
-        cyc = await self._measure(code)
-        clock.harness_ms += (time.perf_counter() - t0) * 1000
+        try:
+            cyc, refs = await self._latency(asm, code)
+        except inline.NotInlinable as e:
+            reject("inline", f"not inlinable: {e}", asm, expl)
+            return
+        except inline.Mismatch as e:
+            reject("inline", str(e), asm, expl, tried="wrong once inlined")
+            return
+        finally:
+            clock.harness_ms += (time.perf_counter() - t0) * 1000
+        bar = min(refs.values(), key=lambda c: c.median)
         self.emit(
             CandidateBenchmarked,
             candidate_id=cid,
             cycles=cyc,
             mca_latency=est.latency,
             mca_rthroughput=est.rthroughput,
-            speedup_vs_clang=round(self.base_cycles["clang"].median / cyc.median, 3),
-            speedup_vs_gcc=round(self.base_cycles["gcc"].median / cyc.median, 3),
+            speedup_vs_clang=round(refs["clang"].median / cyc.median, 3),
+            speedup_vs_gcc=round(refs["gcc"].median / cyc.median, 3),
         )
 
-        if not _faster(cyc, self.bar, cfg.min_gain):
-            reject(
-                "benchmark",
-                f"{cyc.median:.2f} ticks/call, not faster than -O3 ({self.bar.median:.2f})",
-                asm,
-                expl,
-                tried=f"correct but {cyc.median:.2f} ticks/call, not faster than -O3 ({self.bar.median:.2f})",
-            )
+        if not _faster(cyc, bar, cfg.min_gain):
+            slower = f"{cyc.median:.2f} {self.unit}, not faster than -O3 ({bar.median:.2f})"
+            reject("benchmark", slower, asm, expl, tried=f"correct but {slower}")
             self.near = sorted([*self.near, _Member(cid, asm, expl, cyc)], key=lambda m: m.cycles.median)[
                 : cfg.near_misses
             ]
@@ -392,7 +447,7 @@ class FunctionSearch:
 
         # Listed before the proof: proofs can take a while, and meanwhile other
         # calls should know this idea is taken.
-        self.tried.append(f"{expl or '(no explanation)'} -> beats -O3 at {cyc.median:.2f} ticks/call")
+        self.tried.append(f"{expl or '(no explanation)'} -> beats -O3 at {cyc.median:.2f} {self.unit}")
         # Proofs are the expensive stage, so only candidates that beat -O3 get one.
         v = await self.verifier.check_async(self.target, self.ref_code, code)
         clock.verifier_ms = v.elapsed_ms

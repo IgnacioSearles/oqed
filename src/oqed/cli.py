@@ -95,7 +95,7 @@ def _print_event(e) -> None:
         case "baseline_ready":
             typer.secho(
                 f"[{fn}] baseline latency: clang {e.clang.cycles.median:.2f}, "
-                f"gcc {e.gcc.cycles.median:.2f} ticks/call",
+                f"gcc {e.gcc.cycles.median:.2f} ticks",
                 bold=True,
             )
         case "candidate_proposed":
@@ -108,7 +108,7 @@ def _print_event(e) -> None:
             typer.secho(f"[{fn}]   x {e.stage}: {e.reason}{ce}", fg="red")
         case "candidate_benchmarked":
             typer.echo(
-                f"[{fn}]   {e.cycles.median:.2f} ± {e.cycles.spread:.2f} ticks/call "
+                f"[{fn}]   {e.cycles.median:.2f} ± {e.cycles.spread:.2f} ticks "
                 f"(x{e.speedup_vs_clang} vs clang, x{e.speedup_vs_gcc} vs gcc)"
             )
         case "candidate_verified":
@@ -150,6 +150,7 @@ def search(
     max_usd: float = typer.Option(1.0, help="stop the run once its model spend reaches this (USD)"),
     volume_effort: str = "low",
     reasoning_effort: str = "high",
+    bench: str = typer.Option("inline", help="latency measurement: `inline` (asm in a loop) or `call`"),
 ):
     """Run the model-guided search on one or more targets."""
     import asyncio
@@ -165,6 +166,7 @@ def search(
         max_usd=max_usd,
         volume_effort=volume_effort,
         reasoning_effort=reasoning_effort,
+        bench=bench,
     )
     run_id = asyncio.run(
         run_search(

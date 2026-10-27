@@ -28,8 +28,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import iced_x86 as iced
@@ -60,6 +62,11 @@ class NotInlinable(ValueError):
     pass
 
 
+class Mismatch(ToolError):
+    """The inlined asm computed something different from the C in the loop
+    program (an operand-binding bug, or a candidate that only works when called)."""
+
+
 def written_registers(code: bytes) -> set[str]:
     """Full-width names of the registers `code` writes (gp: `rcx`, vector: `zmm1`),
     implicit operands included, `rip` and flags excluded. Raises NotInlinable
@@ -70,14 +77,12 @@ def written_registers(code: bytes) -> set[str]:
         if insn.mnemonic == iced.Mnemonic.RET:
             continue
         info = factory.info(insn)
+        regs = [(iced.RegisterExt.full_register(r.register), r.access) for r in info.used_registers()]
+        if any(full == iced.Register.RSP for full, _ in regs):
+            raise NotInlinable(f"uses the stack pointer ({insn})")
         if info.used_memory():
             raise NotInlinable(f"accesses memory ({insn})")
-        for r in info.used_registers():
-            full = iced.RegisterExt.full_register(r.register)
-            if full == iced.Register.RSP:
-                raise NotInlinable(f"uses the stack pointer ({insn})")
-            if full != iced.Register.RIP and r.access in _WRITES:
-                out.add(_REG_NAMES[full])
+        out |= {_REG_NAMES[full] for full, acc in regs if full != iced.Register.RIP and acc in _WRITES}
     return out
 
 
@@ -309,28 +314,58 @@ class InlineResult(BaseModel):
         return self.scalar_ref.median / self.indep_cand.median
 
 
-def measure(body: str, target: Target, compiler: Compiler, march: str) -> InlineResult:
-    """Build and run the inlined benchmark with one compiler."""
-    with tempfile.TemporaryDirectory() as d:
-        src, exe = Path(d) / "bench.c", Path(d) / "bench"
+@dataclass
+class Built:
+    """A compiled benchmark program, ready to run (see `build`)."""
+
+    compiler: Compiler
+    dir: Path
+    ref_vectorized: bool
+
+    @property
+    def exe(self) -> Path:
+        return self.dir / "bench"
+
+
+def build(body: str, target: Target, compiler: Compiler, march: str) -> Built:
+    """Compile the inlined benchmark. Separate from `run` so compiling can
+    happen in parallel while timing runs are serialized."""
+    d = Path(tempfile.mkdtemp(prefix="oqed-inline-"))
+    try:
+        src = d / "bench.c"
         src.write_text(bench_program(body, target))
         cmd = [compiler, "-O3", f"-march={march}", "-masm=intel", *_vectorize_flags(compiler)]
-        cmd += ["-o", str(exe), str(src)]
+        cmd += ["-o", str(d / "bench"), str(src)]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode != 0:
             raise ToolError(f"{compiler} failed on the inlined benchmark:\n{proc.stderr.strip()}")
-        vectorized = _loop_vectorized(proc.stderr + proc.stdout, src.read_text())
-        run = [str(exe)]
+        return Built(compiler, d, _loop_vectorized(proc.stderr + proc.stdout, src.read_text()))
+    except BaseException:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+
+
+def run(built: Built) -> InlineResult:
+    """Run a built benchmark (pinned to `OQED_BENCH_CPU` if set) and delete it."""
+    try:
+        cmd = [str(built.exe)]
         if (cpu := harness.bench_cpu()) is not None:
-            run.append(str(cpu))
-        res = subprocess.run(run, capture_output=True, text=True, check=False, timeout=120)
+            cmd.append(str(cpu))
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
+    finally:
+        shutil.rmtree(built.dir, ignore_errors=True)
     rows = [json.loads(ln) for ln in res.stdout.splitlines() if ln.strip()]
     if res.returncode == 2:
-        raise ToolError(f"inlined candidate disagrees with the C source: {rows[0]}")
+        raise Mismatch(f"inlined candidate disagrees with the C source: {rows[0]}")
     if res.returncode != 0:
         raise ToolError(f"inlined benchmark failed ({res.returncode}): {res.stderr.strip()}")
     t = {k: Cycles(median=round(v[1], 3), spread=round(v[2] - v[0], 3)) for r in rows for k, v in r.items()}
-    return InlineResult(compiler=compiler, ref_vectorized=vectorized, **t)
+    return InlineResult(compiler=built.compiler, ref_vectorized=built.ref_vectorized, **t)
+
+
+def measure(body: str, target: Target, compiler: Compiler, march: str) -> InlineResult:
+    """Build and run the inlined benchmark with one compiler."""
+    return run(build(body, target, compiler, march))
 
 
 def _loop_vectorized(remarks: str, src: str) -> bool:

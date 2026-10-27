@@ -11,7 +11,9 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, TypeAdapter
 
 ModelTier = Literal["volume", "reasoning"]
-RejectStage = Literal["parse", "duplicate", "assemble", "isa", "test", "verify", "estimate", "benchmark"]
+RejectStage = Literal[
+    "parse", "duplicate", "assemble", "isa", "test", "verify", "estimate", "inline", "benchmark"
+]
 ProofStatus = Literal["proven", "tested_only"]
 
 RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
