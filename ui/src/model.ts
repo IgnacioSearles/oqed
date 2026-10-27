@@ -13,6 +13,7 @@ import type {
 export interface Candidate {
   id: string;
   n: number; // 1-based order of proposal
+  t: number; // timestamp the model's reply arrived
   tier: ModelTier;
   model: string;
   asm: string;
@@ -35,7 +36,9 @@ export interface FunctionView {
   reference: Baseline | null;
   candidates: Candidate[];
   best: Candidate | null;
-  stalls: number;
+  bestHistory: { n: number; t: number; latency: number }[]; // each new best, in order
+  stalls: { t: number; afterN: number; rounds: number }[];
+  timing: { model: number; harness: number; verifier: number; orchestrator: number };
 }
 
 export interface RunView {
@@ -65,6 +68,7 @@ export function buildRun(events: RunEvent[]): RunView {
     const c: Candidate = {
       id: e.candidate_id,
       n: fn.candidates.length + 1,
+      t: e.timestamp,
       tier: e.model_tier,
       model: e.model,
       asm: e.asm,
@@ -92,7 +96,9 @@ export function buildRun(events: RunEvent[]): RunView {
           reference: e.reference,
           candidates: [],
           best: null,
-          stalls: 0,
+          bestHistory: [],
+          stalls: [],
+          timing: { model: 0, harness: 0, verifier: 0, orchestrator: 0 },
         };
         fns.set(fn.id, fn);
         run.functions.push(fn);
@@ -128,12 +134,25 @@ export function buildRun(events: RunEvent[]): RunView {
       case "new_best": {
         const fn = fns.get(e.function_id);
         const c = cands.get(e.candidate_id);
-        if (fn && c) fn.best = c;
+        if (fn && c) {
+          fn.best = c;
+          if (c.cycles) fn.bestHistory.push({ n: c.n, t: e.timestamp, latency: c.cycles.median });
+        }
         break;
       }
       case "search_stalled": {
         const fn = fns.get(e.function_id);
-        if (fn) fn.stalls += 1;
+        if (fn) fn.stalls.push({ t: e.timestamp, afterN: fn.candidates.length, rounds: e.rounds_without_improvement });
+        break;
+      }
+      case "timing_breakdown": {
+        const fn = e.function_id ? fns.get(e.function_id) : undefined;
+        if (fn) {
+          fn.timing.model += e.model_ms;
+          fn.timing.harness += e.harness_ms;
+          fn.timing.verifier += e.verifier_ms;
+          fn.timing.orchestrator += e.orchestrator_ms;
+        }
         break;
       }
       case "run_finished":
@@ -173,4 +192,48 @@ export function instructionLines(asm: string): string[] {
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
+}
+
+/** Pipeline stages in the order the search runs them, with the rejection
+ * stage that filters candidates out at each step. */
+export const FUNNEL: { stage: RejectStage; label: string }[] = [
+  { stage: "parse", label: "parsed reply" },
+  { stage: "duplicate", label: "new code" },
+  { stage: "assemble", label: "assembles" },
+  { stage: "isa", label: "allowed ISA" },
+  { stage: "test", label: "passes tests" },
+  { stage: "estimate", label: "llvm-mca sane" },
+  { stage: "benchmark", label: "beats -O3" },
+  { stage: "verify", label: "no counterexample" },
+];
+
+export interface FunnelRow {
+  label: string;
+  passed: number;
+  failed: number;
+}
+
+/** Candidates that got through each stage, and how many died there. */
+export function funnel(fn: FunctionView): { proposed: number; rows: FunnelRow[]; proven: number; tested: number } {
+  const order = new Map(FUNNEL.map((f, i) => [f.stage, i]));
+  const failedAt = new Array(FUNNEL.length).fill(0);
+  let finished = 0;
+  for (const c of fn.candidates) {
+    if (c.rejected) failedAt[order.get(c.rejected.stage)!] += 1;
+    else if (c.status) finished += 1;
+  }
+  let alive = fn.candidates.length;
+  const rows = FUNNEL.map((f, i) => {
+    alive -= failedAt[i];
+    return { label: f.label, passed: alive, failed: failedAt[i] };
+  });
+  // Candidates still in flight have not failed anywhere yet; only count those
+  // with a final verdict as having passed the last stage.
+  rows[rows.length - 1].passed = finished;
+  return {
+    proposed: fn.candidates.length,
+    rows,
+    proven: fn.candidates.filter((c) => c.status === "proven").length,
+    tested: fn.candidates.filter((c) => c.status === "tested_only").length,
+  };
 }

@@ -2,20 +2,30 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Leaderboard, RunList } from "./components/Leaderboard";
 import { Panel } from "./components/Panel";
 import { ResultView } from "./components/ResultView";
+import { SearchView } from "./components/SearchView";
 import { type RunEvent, type RunIndexEntry, parseJsonl } from "./events";
 import { buildRun, modelLabel } from "./model";
+import { countUntil, useReplay } from "./replay";
 
 type Theme = "light" | "dark";
+type View = "result" | "search";
 
-function readHash(): { run?: string; fn?: string } {
+const POLL_MS = 1500;
+
+function readHash(): { run?: string; fn?: string; view: View } {
   const p = new URLSearchParams(location.hash.slice(1));
-  return { run: p.get("run") ?? undefined, fn: p.get("fn") ?? undefined };
+  return {
+    run: p.get("run") ?? undefined,
+    fn: p.get("fn") ?? undefined,
+    view: p.get("view") === "search" ? "search" : "result",
+  };
 }
 
-function writeHash(run: string | undefined, fn: string | undefined) {
+function writeHash(run: string | undefined, fn: string | undefined, view: View) {
   const p = new URLSearchParams();
   if (run) p.set("run", run);
   if (fn) p.set("fn", fn);
+  if (view !== "result") p.set("view", view);
   history.replaceState(null, "", `#${p}`);
 }
 
@@ -23,6 +33,7 @@ export default function App() {
   const [runs, setRuns] = useState<RunIndexEntry[]>([]);
   const [runId, setRunId] = useState<string | undefined>(readHash().run);
   const [fnId, setFnId] = useState<string | undefined>(readHash().fn);
+  const [view, setView] = useState<View>(readHash().view);
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme as Theme) ?? "light");
@@ -50,8 +61,41 @@ export default function App() {
 
   const run = useMemo(() => (events ? buildRun(events) : null), [events]);
   const fn = run?.functions.find((f) => f.id === fnId) ?? run?.functions[0];
+  // Local runs still in progress: re-read the log until it finishes.
+  const live = Boolean(entry && run && !run.finished && !entry.demo);
 
-  useEffect(() => writeHash(runId, fn?.id), [runId, fn?.id]);
+  useEffect(() => {
+    if (!live || !entry) return;
+    const id = setInterval(() => {
+      fetch(entry.file, { cache: "no-store" })
+        .then((r) => r.text())
+        .then((t) => setEvents(parseJsonl(t)))
+        .catch(() => {});
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [live, entry]);
+
+  useEffect(() => writeHash(runId, fn?.id, view), [runId, fn?.id, view]);
+
+  // Replay covers the selected function's part of the run.
+  const timestamps = useMemo(() => (events ?? []).map((e) => e.timestamp), [events]);
+  const range = useMemo(() => {
+    let start = Infinity;
+    let end = 0;
+    for (const e of events ?? []) {
+      if ("function_id" in e && e.function_id === fn?.id) {
+        start = Math.min(start, e.timestamp);
+        end = Math.max(end, e.timestamp);
+      }
+    }
+    return start <= end ? { start, end } : { start: 0, end: 0 };
+  }, [events, fn?.id]);
+  const replay = useReplay(range.start, range.end);
+  const shown = useMemo(() => {
+    if (!events || !fn || replay.atEnd) return fn;
+    const partial = buildRun(events.slice(0, countUntil(timestamps, replay.cursor)));
+    return partial.functions.find((f) => f.id === fn.id) ?? fn;
+  }, [events, timestamps, fn, replay.cursor, replay.atEnd]);
 
   const toggleTheme = useCallback(() => {
     const next: Theme = theme === "dark" ? "light" : "dark";
@@ -78,6 +122,20 @@ export default function App() {
         <span className="text-ink-3">faster than -O3. proven equivalent.</span>
         <span className="ml-auto flex items-center gap-3 text-ink-3">
           {run && <span className="hidden truncate md:inline">run {run.id}</span>}
+          <span className="flex" role="group" aria-label="view">
+            {(["result", "search"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                aria-pressed={view === v}
+                className={`-ml-px border border-rule px-2 leading-6 first:ml-0 ${
+                  view === v ? "bg-select font-bold text-ink" : "bg-panel text-ink-3 hover:text-ink"
+                }`}
+              >
+                {v}
+              </button>
+            ))}
+          </span>
           <button
             onClick={toggleTheme}
             className="border border-rule bg-panel-head px-2 leading-6 text-ink-2 hover:text-ink"
@@ -110,7 +168,10 @@ export default function App() {
             </div>
           )}
           {!run && !error && <div className="border border-rule bg-panel px-2.5 py-1.5 text-ink-3">loading…</div>}
-          {fn && <ResultView fn={fn} />}
+          {fn && view === "result" && <ResultView fn={fn} />}
+          {fn && shown && view === "search" && (
+            <SearchView fn={shown} full={fn} replay={replay} live={live && replay.atEnd} />
+          )}
           {run && (
             <Panel title="Method">
               <p className="max-w-5xl px-2.5 py-2 leading-relaxed text-ink-3">
