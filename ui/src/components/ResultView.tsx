@@ -94,6 +94,8 @@ export function ResultView({ fn }: { fn: FunctionView }) {
         </div>
       </Panel>
 
+      {rows.length > 0 && <LatencyBars rows={rows} />}
+
       <Panel title="C source" right="reference semantics" bodyClassName="overflow-x-auto">
         <pre className="px-2.5 py-2 leading-[1.6] text-ink-2">{fn.source.trim()}</pre>
       </Panel>
@@ -120,8 +122,6 @@ export function ResultView({ fn }: { fn: FunctionView }) {
           />
         )}
       </div>
-
-      {rows.length > 0 && <LatencyBars rows={rows} />}
     </div>
   );
 }
