@@ -268,7 +268,9 @@ def optimize(
     unsafe: bool = typer.Option(
         False, help="also lock winners that passed testing but could not be proven (status `tested`)"
     ),
-    top: int = typer.Option(None, help="project mode: search only the N most-called functions"),
+    top: int = typer.Option(
+        None, help="project mode: search only the N most-called functions not yet in the lock"
+    ),
 ):
     """Write winners to oqed.lock for oqed-cc. With no names and no --from-run,
     optimizes the whole project in this directory (see `oqed scan`)."""
@@ -290,8 +292,10 @@ def optimize(
             sc = project.scan(project.load(Path(".")))
             _print_scan(sc)
             locked = {e.function for e in lock.load(lock_path)} if lock_path.exists() else set()
-            chosen = [load_target(f.target) for f in sc.targets[:top] if f.function not in locked]
-            if skipped := [f.name for f in sc.targets[:top] if f.function in locked]:
+            # --top counts the functions still to search, not the ones already locked.
+            todo = [f for f in sc.targets if f.function not in locked]
+            chosen = [load_target(f.target) for f in todo[:top]]
+            if skipped := [f.name for f in sc.targets if f.function in locked]:
                 typer.echo(f"already in {lock_path}, not searched again: {', '.join(skipped)}")
             if not chosen:
                 raise typer.Exit("nothing to search")
