@@ -2,9 +2,11 @@
 
     oqed scan        # in a directory with oqed.toml
 
-`oqed.toml` names a `build` command (run with `CC` set to oqed-cc), a `run`
-command (the workload), and optionally `test` (deterministic output) and
-`bench` (prints one number, lower is better). Scanning:
+`oqed.toml` names a `build` command (run with `CC` set to oqed-cc) and a `run`
+command (the workload). Optionally `test`, whose output must not change (by
+default `run`; when its output varies from run to run, only its exit status
+counts), and `bench`, which prints one number, lower is better unless
+`bench_higher_is_better` (by default oqed times `run`'s CPU time). Scanning:
 
 1. Builds the project with every compile logged and instrumented, then runs
    the workload, which counts calls per function (`profile_rt.c`).
@@ -19,7 +21,7 @@ command (the workload), and optionally `test` (deterministic output) and
    the compiled function calls something. Functions on integers that read no
    global data run in the harness and can be proven (`oracle = "harness"`);
    the rest are judged by the project itself (`oracle = "project"`, see
-   `oracle.py`), which needs `test` and `bench`.
+   `oracle.py`).
 4. Ranks targets by call count, most-called first.
 """
 
@@ -59,9 +61,20 @@ class Project:
     run: str
     cc: str = "clang"
     test: str | None = None  # deterministic output; the oracle for functions that touch memory
-    bench: str | None = None  # prints one number, lower is better
+    bench: str | None = None  # prints one number; None: oqed times `run`
     bench_runs: int = 5
     bench_unit: str = "units"
+    bench_higher_is_better: bool = False  # e.g. MB/s
+
+    @property
+    def test_command(self) -> str:
+        return self.test or self.run
+
+    @property
+    def unit(self) -> str:
+        if self.bench is None:
+            return "CPU ms"
+        return f"1/({self.bench_unit})" if self.bench_higher_is_better else self.bench_unit
 
     @property
     def state(self) -> Path:
@@ -82,6 +95,7 @@ def load(root: Path) -> Project:
         bench=cfg.get("bench"),
         bench_runs=cfg.get("bench_runs", 5),
         bench_unit=cfg.get("bench_unit", "units"),
+        bench_higher_is_better=cfg.get("bench_higher_is_better", False),
     )
 
 
@@ -476,11 +490,8 @@ def discover(project: Project, rec: Path) -> Scan:
         (tdir / "meta.toml").write_text(_toml(meta))
         why, reads_globals = _check(load_target(tdir))
         if why is None and (sig.pointers or sig.ret_c or reads_globals):
-            if project.test and project.bench:
-                meta["oracle"] = "project"
-                (tdir / "meta.toml").write_text(_toml(meta))
-            else:
-                why = "needs `test` and `bench` in oqed.toml (takes pointers, reads global data or calls)"
+            meta["oracle"] = "project"
+            (tdir / "meta.toml").write_text(_toml(meta))
         if why:
             f.skipped = why
             shutil.rmtree(tdir)

@@ -9,10 +9,13 @@ in the harness on random inputs. For those the project is the test:
    existing entries) and the project's `build` command runs with `CC` set to
    oqed-cc in trust mode, which substitutes without proving and logs what it
    applied. A candidate that doesn't build, or isn't substituted, fails.
-3. The project's `test` command must print exactly what the C build printed.
-   A crash, a timeout or any difference fails.
-4. The `bench` command (one number, lower is better) runs `bench_runs` times,
-   alternating with a baseline build so both see the same machine state.
+3. The project's `test` command (by default `run`) must print exactly what
+   the C build printed. A crash, a timeout or any difference fails. When the
+   C build itself prints something different on every run, only the exit
+   status is compared.
+4. The `bench` command (one number) runs `bench_runs` times, alternating with
+   a baseline build so both see the same machine state. Without a `bench`,
+   the CPU time of `run` is the number.
 
 Passing says the project's tests can't tell the candidate from the C. It is
 not a proof: lock entries found this way are `tested` and need `--unsafe`.
@@ -61,8 +64,6 @@ def _run(cmd: str, cwd: Path, env: dict | None = None, timeout: float | None = N
 
 class ProjectOracle:
     def __init__(self, project: Project, workers: int = 3):
-        if not (project.test and project.bench):
-            raise ValueError("the project oracle needs `test` and `bench` in oqed.toml")
         self.project = project
         lock_path = project.root / lock.LOCK_NAME
         self.entries = lock.load(lock_path) if lock_path.exists() else []
@@ -76,6 +77,7 @@ class ProjectOracle:
             shutil.copytree(project.root, tree, ignore=ignore)
             self._trees.put_nowait(tree)
         self.expected: str | None = None
+        self.exit_only = False  # the test's output varies between runs
 
     def close(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -100,15 +102,11 @@ class ProjectOracle:
         proc, _ = self._build(self.base, self.entries)
         if proc.returncode != 0:
             raise RuntimeError(f"baseline build failed:\n{(proc.stdout + proc.stderr)[-2000:]}")
-        outs = [_run(self.project.test, self.base, timeout=TEST_TIMEOUT_S) for _ in range(2)]
+        test = self.project.test_command
+        outs = [_run(test, self.base, timeout=TEST_TIMEOUT_S) for _ in range(2)]
         if any(o.returncode != 0 for o in outs):
-            raise RuntimeError(
-                f"`{self.project.test}` fails on the baseline build:\n{outs[0].stderr[-2000:]}"
-            )
-        if outs[0].stdout != outs[1].stdout:
-            raise RuntimeError(
-                f"`{self.project.test}` prints different output on each run; it can't be the oracle"
-            )
+            raise RuntimeError(f"`{test}` fails on the baseline build:\n{outs[0].stderr[-2000:]}")
+        self.exit_only = outs[0].stdout != outs[1].stdout
         self.expected = outs[0].stdout
 
     def _check(self, tree: Path, entry: lock.LockEntry) -> Verdict:
@@ -122,14 +120,14 @@ class ProjectOracle:
             why = [ln for ln in proc.stderr.splitlines() if fn in ln or "internal error" in ln]
             return Verdict(False, "not substituted: " + (why[0] if why else "function not found"), "inline")
         try:
-            out = _run(self.project.test, tree, timeout=TEST_TIMEOUT_S)
+            out = _run(self.project.test_command, tree, timeout=TEST_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             return Verdict(False, f"project test timed out after {TEST_TIMEOUT_S}s", "test")
         if out.returncode != 0:
             return Verdict(
                 False, f"project test exited with {out.returncode}: {out.stderr.strip()[-300:]}", "test"
             )
-        if out.stdout != self.expected:
+        if not self.exit_only and out.stdout != self.expected:
             got, want = out.stdout.splitlines(), (self.expected or "").splitlines()
             i = next(
                 (i for i, (a, b) in enumerate(zip(got, want, strict=False)) if a != b),
@@ -144,12 +142,17 @@ class ProjectOracle:
         return Verdict(True)
 
     def _number(self, tree: Path) -> float:
-        out = _run(self.project.bench, tree, timeout=TEST_TIMEOUT_S)
+        """One benchmark measurement; lower is better."""
+        p = self.project
+        if p.bench is None:
+            return cpu_ms(p.run, tree)
+        out = _run(p.bench, tree, timeout=TEST_TIMEOUT_S)
         lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
         nums = _NUMBER.findall(lines[-1]) if lines and out.returncode == 0 else []
         if not nums:
-            raise RuntimeError(f"`{self.project.bench}` printed no number (exit {out.returncode})")
-        return float(nums[-1])
+            raise RuntimeError(f"`{p.bench}` printed no number (exit {out.returncode})")
+        x = float(nums[-1])
+        return 1 / x if p.bench_higher_is_better else x
 
     def _bench(self, tree: Path) -> tuple[Cycles, Cycles]:
         cand, base = [], []
@@ -179,6 +182,21 @@ class ProjectOracle:
             return v, cand, base
         finally:
             self._trees.put_nowait(tree)
+
+
+def cpu_ms(command: str, cwd: Path) -> float:
+    """User + system CPU time of a shell command and everything it waits for,
+    in milliseconds (steadier than wall time on a busy machine)."""
+    import os
+
+    proc = subprocess.Popen(
+        command, shell=True, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    _, status, ru = os.wait4(proc.pid, 0)
+    proc.returncode = os.waitstatus_to_exitcode(status)
+    if proc.returncode != 0:
+        raise RuntimeError(f"`{command}` exited with {proc.returncode}")
+    return (ru.ru_utime + ru.ru_stime) * 1000
 
 
 def _cycles(xs: list[float]) -> Cycles:

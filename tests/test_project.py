@@ -54,13 +54,13 @@ def test_scan_finds_ranks_and_slices(proj):
     assert set(by) == {"helper", "hot", "cold", "reads_table", "uses_struct", "never_called", "main"}
     # Counted through inlining: hot and its inlined helper run 1000 times each.
     assert by["hot"].calls == 1000 and by["helper"].calls == 1000 and by["cold"].calls == 1
-    assert [f.name for f in sc.targets] == ["hot", "cold"]
+    assert [f.name for f in sc.targets] == ["hot", "cold", "reads_table", "uses_struct"]
     # One or two instructions from both compilers: nothing to gain.
     assert by["helper"].skipped.startswith("already minimal")
     assert by["never_called"].skipped.startswith("already minimal")
-    # Pointers and global data need the project oracle, which needs `test` and `bench`.
-    assert by["uses_struct"].skipped.startswith("needs `test` and `bench`")
-    assert by["reads_table"].skipped.startswith("needs `test` and `bench`")
+    # Pointers and global data need the project oracle (`run` is the test and the benchmark).
+    assert by["uses_struct"].oracle == by["reads_table"].oracle == "project"
+    assert by["hot"].oracle == "harness"
     assert by["main"].skipped == "main"
     assert by["hot"].location == "lib.c:4"
 
@@ -282,3 +282,41 @@ def test_functions_that_call_others_are_substituted_whole(oracle_proj, cc):
         dis = subprocess.run(objdump, cwd=root, capture_output=True, text=True, check=True)
         body = dis.stdout.split("<sum_mixed>:")[1].split("\n\n")[0]
         assert "call" in body and "<mix" in body
+
+
+def test_build_and_run_are_enough(oracle_proj, monkeypatch):
+    # No test and no bench: `run` is the test (its output has a timestamp, so
+    # only its exit status counts) and its CPU time is the benchmark.
+    monkeypatch.setattr(project, "MINIMAL", 0)
+    import asyncio
+
+    from oqed.oracle import ProjectOracle
+
+    root = oracle_proj.root
+    (root / "oqed.toml").write_text(
+        'build = "$CC -O2 -march=x86-64-v3 -o app main.c lib.c"\nrun = "./app --time"\nbench_runs = 3\n'
+    )
+    proj = project.load(root)
+    t = load_target(next(f for f in project.scan(proj).functions if f.name == "load_le32").target)
+    o = ProjectOracle(proj, workers=1)
+    try:
+        o.setup()
+        assert o.exit_only
+        assert proj.unit == "CPU ms"
+
+        def entry(asm):
+            return lock.LockEntry(
+                function="load_le32", args=t.args, ret=t.ret, march="x86-64-v3", asm=asm,
+                status="tested", speedup=1.0, benchmark=t.name, run="test", candidate="test",
+                oracle="project", slice_sha=t.slice_sha,
+            )  # fmt: skip
+
+        async def judge(asm):
+            return await o.evaluate(entry(asm), asyncio.Lock())
+
+        v, cyc, base = asyncio.run(judge("\tmov eax, dword ptr [rdi]\n\tret\n"))
+        assert v.ok and cyc.median > 0 and base.median > 0
+        v, _, _ = asyncio.run(judge("\txor eax, eax\n\tmov eax, dword ptr [rax]\n\tret\n"))
+        assert not v.ok and v.stage == "test" and "exited with" in v.reason
+    finally:
+        o.close()

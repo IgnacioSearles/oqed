@@ -279,7 +279,7 @@ class FunctionSearch:
             *(asyncio.to_thread(compute_baseline, t, c, cfg.march, cfg.mcpu) for c in COMPILERS)
         )
         bases = dict(zip(COMPILERS, computed, strict=True))
-        self.unit = o.project.bench_unit
+        self.unit = o.project.unit
         base = await o.baseline(self.bench_lock)
         self.base_cycles = {c: base for c in COMPILERS}
         events = {}
@@ -288,7 +288,9 @@ class FunctionSearch:
             e.cycles = base if c == o.project.cc else None
             events[c] = e
         self.emit(BaselineReady, source=t.c_source, signature=c_signature(t), **events)
-        note = PROJECT_NOTE.format(bench=o.project.bench, unit=self.unit, base=base.median)
+        note = PROJECT_NOTE.format(
+            bench=o.project.bench or f"CPU time of `{o.project.run}`", unit=self.unit, base=base.median
+        )
         self.context = prompt.target_context(
             t,
             [prompt.BaselineInfo(c, b.asm, b.mca.latency, b.mca.rthroughput, None) for c, b in bases.items()],
