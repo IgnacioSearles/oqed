@@ -50,6 +50,120 @@ asm = """
 """
 
 [[entry]]
+function = "tag_pack"
+args = ["u32", "u64"]
+ret = "u64"
+march = "x86-64-v3"
+status = "tested"
+speedup = 1.06
+benchmark = "tag_pack"
+run = "20261028-135748-51da"
+candidate = "tag_pack-015"
+oracle = "project"
+slice_sha = "878c4e40cee3804ed4d6d51154d25ea631eb8aeacbfb3bf07f208b6cae99931c"
+asm = """
+	lea eax, [edi*8]
+	cmp edi, 16
+	jae .L2
+	mov byte ptr [rsi], al
+	mov eax, 1
+	ret
+.L2:
+	cmp edi, 2048
+	jae .L3
+	mov ecx, eax
+	shr ecx, 7
+	or al, 0x80
+	mov ah, cl
+	mov word ptr [rsi], ax
+	mov eax, 2
+	ret
+.L3:
+	mov edx, 0x7f7f7f7f
+	pdep ecx, eax, edx
+	or ecx, 0x80808080
+	cmp edi, 262144
+	jae .L4
+	shr eax, 14
+	mov word ptr [rsi], cx
+	mov byte ptr [rsi+2], al
+	mov eax, 3
+	ret
+.L4:
+	cmp edi, 33554432
+	jae .L5
+	shr eax, 21
+	mov dword ptr [rsi], ecx
+	mov byte ptr [rsi+3], al
+	mov eax, 4
+	ret
+.L5:
+	mov dword ptr [rsi], ecx
+	shr edi, 25
+	mov byte ptr [rsi+4], dil
+	mov eax, 5
+	ret
+"""
+
+[[entry]]
+function = "uint32_pack"
+args = ["u32", "u64"]
+ret = "u64"
+march = "x86-64-v3"
+status = "tested"
+speedup = 1.05
+benchmark = "uint32_pack"
+run = "20261028-135748-51da"
+candidate = "uint32_pack-004"
+oracle = "project"
+slice_sha = "f2288e5039579cfe5ef70f141d19ba8ee151b6946ecc67ebf3d1b2e10eda1823"
+asm = """
+	mov eax, 1
+	cmp edi, 128
+	jae 1f
+	mov [rsi], dil
+	ret
+1:
+	mov ecx, edi
+	shr ecx, 7
+	mov eax, edi
+	or al, 0x80
+	mov [rsi], al
+	cmp edi, 16384
+	jae 2f
+	mov [rsi+1], cl
+	mov eax, 2
+	ret
+2:
+	mov edx, edi
+	shr edx, 14
+	or cl, 0x80
+	mov [rsi+1], cl
+	cmp edi, 2097152
+	jae 3f
+	mov [rsi+2], dl
+	mov eax, 3
+	ret
+3:
+	mov ecx, edi
+	shr ecx, 21
+	or dl, 0x80
+	mov [rsi+2], dl
+	cmp edi, 268435456
+	jae 4f
+	mov [rsi+3], cl
+	mov eax, 4
+	ret
+4:
+	or cl, 0x80
+	mov [rsi+3], cl
+	shr edi, 28
+	mov [rsi+4], dil
+	mov eax, 5
+	ret
+"""
+
+[[entry]]
 function = "uint32_size"
 args = ["u32"]
 ret = "u64"
@@ -65,6 +179,208 @@ asm = """
 	mov eax, 352
 	sub eax, ecx
 	shr eax, 6
+	ret
+"""
+
+[[entry]]
+function = "uint64_pack"
+args = ["u64", "u64"]
+ret = "u64"
+march = "x86-64-v3"
+status = "tested"
+speedup = 1.05
+benchmark = "uint64_pack"
+run = "20261028-135748-51da"
+candidate = "uint64_pack-024"
+oracle = "project"
+slice_sha = "bcd636998bccce663a264247ca53492ff1afedd873e174e268aaa7f37f2cafa3"
+asm = """
+	mov rcx, rdi
+	shr rcx, 32
+	test ecx, ecx
+	jnz 10f
+	cmp edi, 128
+	jb 1f
+	cmp edi, 16384
+	jb 2f
+	cmp edi, 2097152
+	jb 3f
+	cmp edi, 268435456
+	jb 4f
+	mov eax, edi
+	and eax, 127
+	or eax, 128
+	mov edx, edi
+	shr edx, 7
+	and edx, 127
+	or edx, 128
+	shl edx, 8
+	or eax, edx
+	mov edx, edi
+	shr edx, 14
+	and edx, 127
+	or edx, 128
+	shl edx, 16
+	or eax, edx
+	mov edx, edi
+	shr edx, 21
+	or edx, 128
+	shl edx, 24
+	or eax, edx
+	mov dword ptr [rsi], eax
+	shr edi, 28
+	mov byte ptr [rsi+4], dil
+	mov eax, 5
+	ret
+1:
+	mov byte ptr [rsi], dil
+	mov eax, 1
+	ret
+2:
+	mov ecx, edi
+	shr ecx, 7
+	mov byte ptr [rsi+1], cl
+	mov cl, dil
+	or cl, -128
+	mov byte ptr [rsi], cl
+	mov eax, 2
+	ret
+3:
+	mov ecx, edi
+	shr ecx, 7
+	or cl, -128
+	mov byte ptr [rsi+1], cl
+	mov edx, edi
+	shr edx, 14
+	mov byte ptr [rsi+2], dl
+	mov cl, dil
+	or cl, -128
+	mov byte ptr [rsi], cl
+	mov eax, 3
+	ret
+4:
+	mov ecx, edi
+	shr ecx, 7
+	or cl, -128
+	mov byte ptr [rsi+1], cl
+	mov edx, edi
+	shr edx, 14
+	or dl, -128
+	mov byte ptr [rsi+2], dl
+	mov ecx, edi
+	shr ecx, 21
+	mov byte ptr [rsi+3], cl
+	mov cl, dil
+	or cl, -128
+	mov byte ptr [rsi], cl
+	mov eax, 4
+	ret
+10:
+	mov eax, edi
+	and eax, 127
+	or eax, 128
+	mov edx, edi
+	shr edx, 7
+	and edx, 127
+	or edx, 128
+	shl edx, 8
+	or eax, edx
+	mov edx, edi
+	shr edx, 14
+	and edx, 127
+	or edx, 128
+	shl edx, 16
+	or eax, edx
+	mov edx, edi
+	shr edx, 21
+	or edx, 128
+	shl edx, 24
+	or eax, edx
+	mov dword ptr [rsi], eax
+	mov edx, ecx
+	shl edx, 4
+	mov eax, edi
+	shr eax, 28
+	or edx, eax
+	cmp ecx, 8
+	jae 11f
+	mov byte ptr [rsi+4], dl
+	mov eax, 5
+	ret
+11:
+	or dl, -128
+	mov byte ptr [rsi+4], dl
+	shr ecx, 3
+	cmp ecx, 128
+	jb 6f
+	cmp ecx, 16384
+	jb 7f
+	cmp ecx, 2097152
+	jb 8f
+	cmp ecx, 268435456
+	jb 9f
+	mov eax, ecx
+	shr eax, 28
+	mov byte ptr [rsi+9], al
+	mov eax, ecx
+	shr eax, 21
+	or al, -128
+	mov byte ptr [rsi+8], al
+	mov eax, ecx
+	shr eax, 14
+	or al, -128
+	mov byte ptr [rsi+7], al
+	mov eax, ecx
+	shr eax, 7
+	or al, -128
+	mov byte ptr [rsi+6], al
+	mov al, cl
+	or al, -128
+	mov byte ptr [rsi+5], al
+	mov eax, 10
+	ret
+9:
+	mov eax, ecx
+	shr eax, 21
+	mov byte ptr [rsi+8], al
+	mov eax, ecx
+	shr eax, 14
+	or al, -128
+	mov byte ptr [rsi+7], al
+	mov eax, ecx
+	shr eax, 7
+	or al, -128
+	mov byte ptr [rsi+6], al
+	mov al, cl
+	or al, -128
+	mov byte ptr [rsi+5], al
+	mov eax, 9
+	ret
+8:
+	mov eax, ecx
+	shr eax, 14
+	mov byte ptr [rsi+7], al
+	mov eax, ecx
+	shr eax, 7
+	or al, -128
+	mov byte ptr [rsi+6], al
+	mov al, cl
+	or al, -128
+	mov byte ptr [rsi+5], al
+	mov eax, 8
+	ret
+7:
+	mov eax, ecx
+	shr eax, 7
+	mov byte ptr [rsi+6], al
+	mov al, cl
+	or al, -128
+	mov byte ptr [rsi+5], al
+	mov eax, 7
+	ret
+6:
+	mov byte ptr [rsi+5], cl
+	mov eax, 6
 	ret
 """
 

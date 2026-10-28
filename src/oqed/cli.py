@@ -93,11 +93,10 @@ def _print_event(e) -> None:
     fn = getattr(e, "function_id", "") or ""
     match e.type:
         case "baseline_ready":
-            typer.secho(
-                f"[{fn}] baseline latency: clang {e.clang.cycles.median:.2f}, "
-                f"gcc {e.gcc.cycles.median:.2f} ticks",
-                bold=True,
-            )
+            # The project oracle times only the project's own compiler.
+            pairs = (("clang", e.clang), ("gcc", e.gcc))
+            timed = [f"{c} {b.cycles.median:.2f}" for c, b in pairs if b.cycles]
+            typer.secho(f"[{fn}] baseline: {', '.join(timed)}", bold=True)
         case "candidate_proposed":
             tier = "R" if e.model_tier == "reasoning" else "v"
             typer.echo(

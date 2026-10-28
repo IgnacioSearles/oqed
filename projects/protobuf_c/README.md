@@ -60,5 +60,37 @@ on `get_packed_size`; adding `get_tag_size` and `sint64_size` mostly helps gcc.
 The gain comes from branch mispredictions on values of mixed magnitude: a batch
 where every value fits in one byte would see little change.
 
-The hottest functions oqed can't search yet take pointers (`field_is_zeroish`,
-`uint32_pack`, `required_field_pack`, ...): that is the next step.
+## Functions that write memory (`--unsafe`, project oracle)
+
+`oqed optimize --unsafe field_is_zeroish uint32_pack tag_pack uint64_pack
+sint64_pack` (run `20261028-*`, $0.29) searched the hottest functions that take
+pointers. These can't be run alone on random inputs, so each candidate was
+built into a copy of this project and judged by `pbc_profile --check` (packed
+bytes, hash and round trip must match the C build exactly) and timed with
+`pbc_profile --time` against a baseline build, both with clang.
+
+| function | calls | candidates the tests rejected | result (size + pack, whole benchmark) |
+|---|---|---|---|
+| `field_is_zeroish` | 12.3M | 2 | no win: every passing candidate was slower than the compiler's jump table |
+| `uint32_pack` | 6.2M | 7 | 1.07×, tested |
+| `tag_pack` | 4.2M | 0 | 1.08×, tested |
+| `uint64_pack` | 3.3M | 7 | 1.06×, tested |
+| `sint64_pack` | 0.8M | 13 | no win |
+
+All three winners are varint encoders. They are locked as `tested`: oqed-cc
+substitutes them only while the function and the declarations it uses hash to
+what was tested, and says `UNSAFE` when it does. Size + pack, ns per point,
+median of 5 runs:
+
+| compiler | plain | proven entries | proven + tested |
+|---|---|---|---|
+| clang | 75.4 | 64.3 (1.17×) | **61.8 (1.22×)** |
+| gcc | 79.1 | 66.6 (1.19×) | 66.8 (1.18×) |
+
+The tested entries help clang, the compiler the oracle used, and do nothing
+for gcc. The oracle is only as good as `--check`, which packs one message type:
+the encoders are covered, but most of `field_is_zeroish`'s cases (strings,
+bytes, floats) are not exercised by it.
+
+The hottest functions oqed still can't search call other functions
+(`required_field_pack` calls `memcpy` and `protobuf_c_message_pack`).
