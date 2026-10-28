@@ -39,7 +39,7 @@ from pathlib import Path
 
 from .cc import _INT_TYPES
 from .targets import IntType, Target, load_target
-from .toolchain import ToolError, compile_to_asm
+from .toolchain import ToolError, compile_to_asm, instruction_lines
 
 CONFIG = "oqed.toml"
 STATE = ".oqed"
@@ -349,10 +349,15 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
     return _PRELUDE + "\n" + "\n\n".join(out) + "\n", loops
 
 
+# Functions both compilers reduce to this many instructions (plus `ret`) aren't worth a search.
+MINIMAL = 2
+
+
 def _check(target: Target) -> tuple[str | None, bool]:
     """Why oqed can't search this target, if it can't, and whether the
     compiled code reads global data (so the harness can't run it alone)."""
     reads_globals = False
+    sizes = []
     for compiler in ("clang", "gcc"):
         try:
             asm = compile_to_asm(target, compiler)
@@ -367,6 +372,9 @@ def _check(target: Target) -> tuple[str | None, bool]:
             if re.fullmatch(r"[A-Za-z_][\w.@]*", op) and not op.startswith(".L") and op not in _GPRS:
                 return f"tail-calls {op} ({compiler})", False
             reads_globals |= "rip" in ins
+        sizes.append(len([ln for ln in instruction_lines(asm) if ln != "ret"]))
+    if max(sizes) <= MINIMAL:
+        return f"already minimal ({max(sizes)} instructions)", reads_globals
     return None, reads_globals
 
 

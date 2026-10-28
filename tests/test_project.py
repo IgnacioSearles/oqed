@@ -23,7 +23,7 @@ static const unsigned char table[256] = {1, 2, 3, 5, 8, 13};
 u32 hot(u32 x) { return helper(x) | (x << 1); }
 int cold(int a, int b) { return a > b ? a : b; }
 int reads_table(unsigned char c) { return table[c] * 3; }
-int uses_struct(const struct point *p) { return p->x + p->y; }
+int uses_struct(const struct point *p) { return p->x * 3 + p->y * 5; }
 int never_called(int a) { return a * 7; }
 """
 MAIN_C = """
@@ -54,7 +54,10 @@ def test_scan_finds_ranks_and_slices(proj):
     assert set(by) == {"helper", "hot", "cold", "reads_table", "uses_struct", "never_called", "main"}
     # Counted through inlining: hot and its inlined helper run 1000 times each.
     assert by["hot"].calls == 1000 and by["helper"].calls == 1000 and by["cold"].calls == 1
-    assert [f.name for f in sc.targets] == ["helper", "hot", "cold", "never_called"]
+    assert [f.name for f in sc.targets] == ["hot", "cold"]
+    # One or two instructions from both compilers: nothing to gain.
+    assert by["helper"].skipped.startswith("already minimal")
+    assert by["never_called"].skipped.startswith("already minimal")
     # Pointers and global data need the project oracle, which needs `test` and `bench`.
     assert by["uses_struct"].skipped.startswith("needs `test` and `bench`")
     assert by["reads_table"].skipped.startswith("needs `test` and `bench`")
@@ -145,7 +148,8 @@ def oracle_proj(tmp_path):
     return project.load(tmp_path)
 
 
-def test_project_oracle_judges_memory_candidates(oracle_proj, tmp_path):
+def test_project_oracle_judges_memory_candidates(oracle_proj, tmp_path, monkeypatch):
+    monkeypatch.setattr(project, "MINIMAL", 0)  # its functions are tiny on purpose
     import asyncio
 
     from oqed.events import read_events
@@ -165,7 +169,7 @@ def test_project_oracle_judges_memory_candidates(oracle_proj, tmp_path):
     }
     replies = [f"<explanation>{k}</explanation><asm>\n{v}\n</asm>" for k, v in answers.items()]
     mock = MockProvider(replies, seed=3)
-    cfg = SearchConfig(candidates=40, concurrency=1, stall_after=100)
+    cfg = SearchConfig(waves=False, candidates=40, concurrency=1, stall_after=100)
     run_id = asyncio.run(run_search([t], mock, mock, cfg, runs_dir=tmp_path / "runs"))
     events = read_events(tmp_path / "runs" / f"{run_id}.jsonl")
     kind = {e.candidate_id: e.explanation for e in events if e.type == "candidate_proposed"}
@@ -184,7 +188,8 @@ def test_project_oracle_judges_memory_candidates(oracle_proj, tmp_path):
         assert outcome[k][0] == "inline" and "does not build" in outcome[k][1], outcome[k]
 
 
-def test_project_entry_applies_only_to_the_tested_source(oracle_proj):
+def test_project_entry_applies_only_to_the_tested_source(oracle_proj, monkeypatch):
+    monkeypatch.setattr(project, "MINIMAL", 0)  # its functions are tiny on purpose
     sc = project.scan(oracle_proj)
     t = load_target(next(f for f in sc.functions if f.name == "load_le32").target)
     root = oracle_proj.root

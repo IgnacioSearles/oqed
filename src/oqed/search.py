@@ -19,6 +19,7 @@ ship) and joins the population as `tested_only`.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import shutil
 import time
@@ -69,7 +70,16 @@ class Model(Protocol):
 @dataclass
 class SearchConfig:
     candidates: int = 24  # model calls per function, at most
-    concurrency: int = 8
+    concurrency: int = 8  # parallel calls per function when `waves` is off
+    # Waves: a first wave in parallel; if something beats the C, smaller waves
+    # that build on the best, until one doesn't improve. In past runs the first
+    # few candidates found most of the gain, and functions with no win spent all
+    # `candidates` finding nothing.
+    waves: bool = True
+    first_wave: int = 6
+    wave: int = 3
+    near_miss_margin: float = 0.03  # no win yet: one more wave only if a candidate came this close
+    functions_in_parallel: int = 3
     stall_after: int = 8  # evaluated candidates without improvement before calling the reasoning tier
     reasoning_attempts: int = 2  # fruitless reasoning-tier calls before the function counts as converged
     volume_effort: str = "low"
@@ -260,7 +270,10 @@ class FunctionSearch:
         listings for the prompt, and the project's benchmark on the C build."""
         t, cfg, o = self.target, self.config, self.oracle
         assert o is not None
-        bases = {c: compute_baseline(t, c, cfg.march, cfg.mcpu) for c in COMPILERS}
+        computed = await asyncio.gather(
+            *(asyncio.to_thread(compute_baseline, t, c, cfg.march, cfg.mcpu) for c in COMPILERS)
+        )
+        bases = dict(zip(COMPILERS, computed, strict=True))
         self.unit = o.project.bench_unit
         base = await o.baseline(self.bench_lock)
         self.base_cycles = {c: base for c in COMPILERS}
@@ -283,7 +296,10 @@ class FunctionSearch:
             await self._setup_project()
             return
         t, cfg = self.target, self.config
-        bases = {c: compute_baseline(t, c, cfg.march, cfg.mcpu) for c in ("clang", "gcc")}
+        computed = await asyncio.gather(
+            *(asyncio.to_thread(compute_baseline, t, c, cfg.march, cfg.mcpu) for c in COMPILERS)
+        )
+        bases = dict(zip(COMPILERS, computed, strict=True))
         self.ref_code = assemble(bases["clang"].asm)
         self.unit = _UNIT[cfg.bench]
         if cfg.bench == "call":
@@ -382,6 +398,65 @@ class FunctionSearch:
                 # Count the attempt so a stalled search can still converge without it.
                 self.reasoning_unaffordable = True
                 self.reasoning_since_best = cfg.reasoning_attempts
+
+    async def run(self) -> None:
+        """Search this function: waves (the default), or free-running workers."""
+        cfg = self.config
+        if not cfg.waves:
+            async with asyncio.TaskGroup() as tg:
+                for _ in range(cfg.concurrency):
+                    tg.create_task(self.worker())
+            return
+        size, waves, escalated = cfg.first_wave, 0, False
+        while not self.done:
+            if self.proposed >= cfg.candidates:
+                self.stop(f"reached the limit of {cfg.candidates} candidates")
+                return
+            incumbent = self.best[0].candidate_id if self.best else None
+            n = min(size, cfg.candidates - self.proposed)
+            tiers: list[ModelTier] = ["volume"] * n
+            if escalated:
+                tiers[0] = "reasoning"
+            started = await asyncio.gather(*(self._slot(t) for t in tiers))
+            waves += 1
+            if not all(started) and self.budget.exhausted or not any(started):
+                self.stop(
+                    f"spending cap reached: ${self.budget.spent:.2f} spent, the next call might not fit"
+                )
+                return
+            if not self.best:
+                bar = min(c.median for c in self.base_cycles.values())
+                close = self.near and self.near[0].cycles.median <= bar * (1 + cfg.near_miss_margin)
+                if waves == 1 and close:
+                    size = cfg.wave
+                    continue
+                self.stop(f"nothing beat the C in {self.proposed} candidates")
+                return
+            if self.best[0].candidate_id != incumbent:
+                size, escalated = cfg.wave, False
+                continue
+            # A wave without improvement: once, hand over to the reasoning tier if it fits.
+            if (
+                not escalated
+                and not self.reasoning_unaffordable
+                and self.reasoning_since_best < cfg.reasoning_attempts
+            ):
+                self.emit(SearchStalled, rounds_without_improvement=self.stall)
+                self.reasoning_since_best += 1
+                size, escalated = cfg.wave, True
+                continue
+            self.stop(f"no improvement in the last wave ({self.proposed} candidates)")
+
+    async def _slot(self, tier: ModelTier) -> bool:
+        """One call in a wave. False when it did not fit under the spending cap."""
+        self.proposed += 1
+        if await self.one(self.proposed, tier):
+            return True
+        self.proposed -= 1
+        if tier == "reasoning":
+            self.reasoning_unaffordable = True
+            return True  # the volume calls in the wave still count
+        return False
 
     def stop(self, reason: str) -> None:
         if not self.done:
@@ -694,7 +769,11 @@ async def run_search(
         if t.oracle == "project" and t.project and t.project not in oracles:
             from .project import load as load_project
 
-            o = ProjectOracle(load_project(Path(t.project)))
+            # One build tree per concurrent candidate build, up to the cores available.
+            trees = min(
+                os.cpu_count() or 1, config.functions_in_parallel * config.wave if config.waves else 3
+            )
+            o = ProjectOracle(load_project(Path(t.project)), workers=max(trees, 1))
             await asyncio.to_thread(o.setup)
             oracles[t.project] = o
     with EventLog(run_id, runs_dir) as log:
@@ -708,19 +787,27 @@ async def run_search(
                 config={k: v for k, v in vars(config).items()},
             )
         )
-        for t in targets:
-            if budget.exhausted:
-                print(f"[{t.name}] skipped: spending cap reached (${budget.spent:.2f})")
-                continue
-            oracle = oracles.get(t.project or "") if t.oracle == "project" else None
-            fs = FunctionSearch(
-                t, volume, reasoning, config, log, bench_lock, verifier, budget=budget, oracle=oracle
-            )
-            await fs.setup()
-            async with asyncio.TaskGroup() as tg:
-                for _ in range(config.concurrency):
-                    tg.create_task(fs.worker())
-            summary[t.name] = fs.summary()
+        # Several functions at once (in the given order, so the hottest start
+        # first). They share the spending cap and take turns at the benchmark.
+        slots = asyncio.Semaphore(config.functions_in_parallel if config.waves else 1)
+
+        async def search_one(t: Target) -> None:
+            async with slots:
+                if budget.exhausted:
+                    print(f"[{t.name}] skipped: spending cap reached (${budget.spent:.2f})")
+                    return
+                oracle = oracles.get(t.project or "") if t.oracle == "project" else None
+                fs = FunctionSearch(
+                    t, volume, reasoning, config, log, bench_lock, verifier, budget=budget, oracle=oracle
+                )
+                await fs.setup()
+                await fs.run()
+                summary[t.name] = fs.summary()
+
+        async with asyncio.TaskGroup() as tg:
+            for t in targets:
+                tg.create_task(search_one(t))
+        summary = {t.name: summary[t.name] for t in targets if t.name in summary}
         if budget.unpriced:
             print(f"note: {budget.unpriced} calls to models without a known price are not in the spend total")
         log.emit(RunFinished(run_id=run_id, summary=summary, cost_usd=round(budget.spent, 4)))

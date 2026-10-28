@@ -42,7 +42,7 @@ def test_parse_reply_variants():
 def test_search_loop_with_mock(tmp_path):
     clang = f"<explanation>baseline</explanation><asm>\n{compile_to_asm(T, 'clang')}</asm>"
     mock = MockProvider([GOOD, WRONG, GARBAGE, AVX512, clang], seed=1)
-    cfg = SearchConfig(candidates=20, concurrency=4, stall_after=3, reasoning_attempts=100)
+    cfg = SearchConfig(waves=False, candidates=20, concurrency=4, stall_after=3, reasoning_attempts=100)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     kinds = Counter(e.type for e in events)
@@ -85,7 +85,7 @@ def test_faster_requires_margin_beyond_noise():
 
 def test_search_converges_after_fruitless_reasoning(tmp_path):
     mock = MockProvider([GOOD, WRONG], seed=2)
-    cfg = SearchConfig(candidates=200, concurrency=2, stall_after=3, reasoning_attempts=2)
+    cfg = SearchConfig(waves=False, candidates=200, concurrency=2, stall_after=3, reasoning_attempts=2)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     kinds = Counter(e.type for e in events)
@@ -100,7 +100,7 @@ def test_search_converges_after_fruitless_reasoning(tmp_path):
 def test_parents_are_population_members(tmp_path):
     mock = MockProvider([GOOD, WRONG, GARBAGE], seed=3)
     # Sequential, so each call sees the result of the one before.
-    cfg = SearchConfig(candidates=12, concurrency=1, stall_after=100)
+    cfg = SearchConfig(waves=False, candidates=12, concurrency=1, stall_after=100)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     proposed = [e for e in events if e.type == "candidate_proposed"]
@@ -128,7 +128,7 @@ def test_prompt_state_shows_parent_and_tried_ideas():
 
 def test_spending_cap_stops_the_run(tmp_path):
     mock = MockProvider([GOOD, WRONG, GARBAGE], seed=4, cost=0.1)
-    cfg = SearchConfig(candidates=50, concurrency=2, stall_after=100, max_usd=0.5)
+    cfg = SearchConfig(waves=False, candidates=50, concurrency=2, stall_after=100, max_usd=0.5)
     other = load_target("parity_u32")
     run_id = asyncio.run(run_search([T, other], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
@@ -144,7 +144,7 @@ def test_spending_cap_stops_the_run(tmp_path):
 def test_reasoning_tier_is_skipped_when_its_worst_case_does_not_fit(tmp_path, capsys):
     volume = MockProvider([WRONG], seed=0, cost=0.01)
     reasoning = MockProvider([GOOD], seed=0, model="mock-reasoning", cost=0.3, worst=0.7)
-    cfg = SearchConfig(candidates=20, concurrency=1, stall_after=3, max_usd=0.25)
+    cfg = SearchConfig(waves=False, candidates=20, concurrency=1, stall_after=3, max_usd=0.25)
     run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     assert not any(e.type == "candidate_proposed" and e.model == "mock-reasoning" for e in events)
@@ -158,7 +158,7 @@ def test_candidates_not_faster_than_a_proven_best_skip_the_proof(tmp_path):
     slower = GOOD.replace("ret\n</asm>", pad + "ret\n</asm>")
     slower = slower.replace("lzcnt + 64-bit shrx", "padded")
     mock = MockProvider([GOOD, slower], seed=1)
-    cfg = SearchConfig(candidates=8, concurrency=1, stall_after=100)
+    cfg = SearchConfig(waves=False, candidates=8, concurrency=1, stall_after=100)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     proposed = {e.candidate_id: e.explanation for e in events if e.type == "candidate_proposed"}
@@ -174,7 +174,7 @@ def test_stack_using_candidate_is_rejected_as_not_inlinable(tmp_path):
     # Correct (passes testing and could be proven) but pushes to the stack.
     stack = GOOD.replace("<asm>\n", "<asm>\npush rbx\npop rbx\n")
     mock = MockProvider([stack], seed=0)
-    cfg = SearchConfig(candidates=1, concurrency=1, stall_after=100)
+    cfg = SearchConfig(waves=False, candidates=1, concurrency=1, stall_after=100)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     rej = [e for e in events if e.type == "candidate_rejected"]
@@ -184,7 +184,7 @@ def test_stack_using_candidate_is_rejected_as_not_inlinable(tmp_path):
 
 def test_inlined_speedups_compare_against_c_in_the_same_loop(tmp_path):
     mock = MockProvider([GOOD], seed=0)
-    cfg = SearchConfig(candidates=1, concurrency=1, stall_after=100)
+    cfg = SearchConfig(waves=False, candidates=1, concurrency=1, stall_after=100)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     run = next(e for e in events if e.type == "run_started")
@@ -192,3 +192,38 @@ def test_inlined_speedups_compare_against_c_in_the_same_loop(tmp_path):
     b = next(e for e in events if e.type == "candidate_benchmarked")
     # The lzcnt rewrite is ~3x faster than the smearing C in the dependent loop.
     assert min(b.speedup_vs_clang, b.speedup_vs_gcc) > 1.5
+
+
+def test_waves_stop_after_one_wave_when_nothing_beats_the_c(tmp_path):
+    mock = MockProvider([WRONG, GARBAGE], seed=0)
+    cfg = SearchConfig(candidates=40)
+    run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    assert sum(e.type == "candidate_proposed" for e in events) == cfg.first_wave
+    stopped = next(e for e in events if e.type == "search_stopped")
+    assert "nothing beat the C" in stopped.reason
+
+
+def test_waves_refine_then_escalate_once_then_stop(tmp_path):
+    volume = MockProvider([GOOD], seed=0)
+    reasoning = MockProvider([GOOD], seed=0, model="mock-reasoning")
+    cfg = SearchConfig(candidates=40)
+    run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    proposed = [e for e in events if e.type == "candidate_proposed"]
+    # First wave finds the best; a refinement wave doesn't improve; one wave led
+    # by the reasoning tier doesn't either; stop.
+    assert len(proposed) == cfg.first_wave + 2 * cfg.wave
+    assert sum(e.model == "mock-reasoning" for e in proposed) == 1
+    assert "no improvement" in next(e for e in events if e.type == "search_stopped").reason
+    assert events[-1].summary[T.name].status == "proven"
+
+
+def test_waves_search_several_functions_at_once(tmp_path):
+    mock = MockProvider([WRONG], seed=0)
+    other = load_target("parity_u32")
+    cfg = SearchConfig(candidates=40)
+    run_id = asyncio.run(run_search([T, other], mock, mock, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    assert list(events[-1].summary) == [T.name, other.name]
+    assert sum(e.type == "candidate_proposed" for e in events) == 2 * cfg.first_wave
