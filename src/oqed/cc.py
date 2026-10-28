@@ -142,8 +142,11 @@ def _ast(path: Path, name: str) -> list[dict]:
 
 
 def _int_type(spelling: str, path: Path, depth: int = 0) -> IntType | None:
-    """Map a type spelling to an IntType, resolving typedefs through the AST."""
+    """Map a type spelling to an IntType, resolving typedefs through the AST.
+    Pointers are u64, as passed in registers."""
     s = re.sub(r"\b(const|volatile)\b", "", spelling).strip()
+    if s.endswith("*"):
+        return "u64"
     if s in _INT_TYPES:
         return _INT_TYPES[s]
     if depth > 4 or not re.fullmatch(r"\w+", s):
@@ -169,7 +172,7 @@ def find_definition(path: Path, name: str) -> Definition | str:
         spellings = [p["type"]["qualType"] for p in parms]
         args = [_int_type(p["type"].get("desugaredQualType", p["type"]["qualType"]), path) for p in parms]
         ret_spelling = d["type"]["qualType"].split("(")[0].strip()
-        ret = _int_type(ret_spelling, path)
+        ret = "u64" if ret_spelling == "void" else _int_type(ret_spelling, path)
         if ret is None or any(a is None for a in args):
             return f"signature {d['type']['qualType']!r} is not integers in registers"
         end = body["range"]["end"]
@@ -193,7 +196,8 @@ class Substitution:
 
     def __post_init__(self) -> None:
         d = self.definition
-        self.body = inline.asm_body(self.entry.asm, d.args, d.params, ret_cast=d.ret_spelling)
+        memory = self.entry.oracle == "project"
+        self.body = inline.asm_body(self.entry.asm, d.args, d.params, ret_cast=d.ret_spelling, memory=memory)
 
 
 def rewrite(text: bytes, subs: list[Substitution]) -> bytes:
@@ -278,6 +282,16 @@ def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> tuple[
     return "kept", why
 
 
+def _slice_sha(ipath: Path, function: str, root: Path) -> str | None:
+    """The same hash `oqed scan` records for a function: its definition and
+    the project declarations it uses, as sliced from the preprocessed file."""
+    from . import project
+
+    unit = project._Unit(ipath, Path.cwd())
+    d = unit.defs.get(function)
+    return None if d is None else project.slice_sha(project.slice_source(unit, d, root.resolve())[0])
+
+
 def _cache_dir() -> Path:
     return Path(os.environ.get("OQED_CACHE", Path.home() / ".cache" / "oqed")) / "cc"
 
@@ -303,7 +317,9 @@ def process_source(cc: str, cmd: Command, src: str, entries: list[lock.LockEntry
     for e in wanted:
         key.update(e.model_dump_json().encode())
     cached = _cache_dir() / f"{key.hexdigest()}.json"
-    if cached.is_file():
+    if os.environ.get("OQED_TRUST"):
+        decision = _decide(cc, cmd, src, text, ipath, wanted, work)
+    elif cached.is_file():
         decision = json.loads(cached.read_text())
     else:
         decision = _decide(cc, cmd, src, text, ipath, wanted, work)
@@ -311,6 +327,9 @@ def process_source(cc: str, cmd: Command, src: str, entries: list[lock.LockEntry
         cached.write_text(json.dumps(decision))
     for msg in decision["notes"]:
         note(msg)
+    if applied := os.environ.get("OQED_APPLIED"):
+        with open(applied, "a") as f:
+            f.writelines(f"{fn}\n" for fn in decision["kept"])
     if not decision["kept"]:
         return None
     subs = [
@@ -334,7 +353,7 @@ def _decide(
         if e.march not in MARCH_FEATURES or cmd.march not in MARCH_FEATURES:
             notes.append(f"{src}: {e.function}: kept C (unknown -march {cmd.march!r})")
             continue
-        if bad := isa_violations(assemble(e.asm), cmd.march):
+        if bad := isa_violations(assemble(e.asm, relocations=e.oracle == "project"), cmd.march):
             notes.append(f"{src}: {e.function}: kept C (needs {', '.join(bad)} beyond -march={cmd.march})")
             continue
         d = find_definition(ipath, e.function)
@@ -351,6 +370,26 @@ def _decide(
             notes.append(f"{src}: {e.function}: kept C (not inlinable: {ex})")
     if not subs:
         return {"kept": [], "notes": notes}
+    if os.environ.get("OQED_TRUST"):
+        # The project oracle's own builds: it tests the result itself.
+        return {"kept": [s.entry.function for s in subs], "notes": notes}
+
+    # Entries judged by the project's tests can't be proven; they apply only
+    # to the source they were tested against.
+    unsafe: dict[str, str] = {}
+    lock_path = Path(os.environ["OQED_LOCK"]) if os.environ.get("OQED_LOCK") else lock.find(Path.cwd())
+    root = lock_path.parent if lock_path else Path.cwd()  # the lock sits in the project root
+    harness_subs = []
+    for s in subs:
+        if s.entry.oracle != "project":
+            harness_subs.append(s)
+        elif _slice_sha(ipath, s.entry.function, root) == s.entry.slice_sha:
+            unsafe[s.entry.function] = "tested with the project's test command, source unchanged since"
+        else:
+            notes.append(f"{src}: {s.entry.function}: kept C (source changed since it was tested)")
+    subs = harness_subs + [s for s in subs if s.entry.function in unsafe]
+    if not subs:
+        return {"kept": [], "notes": notes}
 
     remark_flags = ["-Rpass=loop-vectorize"] if _is_clang(cc) else ["-fopt-info-vec-optimized"]
     wrappers = "".join(_wrapper(s.definition) for s in subs).encode()
@@ -362,8 +401,10 @@ def _decide(
 
     original = compile_variant("orig", [])
     rewritten = compile_variant("all", subs)
-    proven, unsafe = [], {}
+    proven = [s for s in subs if s.entry.function in unsafe]
     for s in subs:
+        if s.entry.function in unsafe:
+            continue
         verdict, why = _prove(s, original, rewritten)
         if verdict == "kept":
             notes.append(f"{src}: {s.entry.function}: kept C ({why})")

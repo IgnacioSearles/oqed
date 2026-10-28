@@ -1,3 +1,7 @@
-# oqed scan / oqed optimize: build the workload with $CC (oqed-cc in record mode), then run it.
+# oqed scan / oqed optimize. `build` is run with $CC set by oqed (record mode
+# for the profile, a candidate's substitution for the oracle).
 build = "make -B pbc_profile"
-run = "./pbc_profile"
+run = "./pbc_profile"            # workload profiled for call counts
+test = "./pbc_profile --check"   # output must match the C build exactly
+bench = "./pbc_profile --time"   # prints one number, lower is better
+bench_unit = "ns/point"

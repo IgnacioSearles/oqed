@@ -2,26 +2,31 @@
 
     oqed scan        # in a directory with oqed.toml
 
-`oqed.toml` names a `build` command (run with `CC` set to oqed-cc in record
-mode) and a `run` command (the workload). Scanning:
+`oqed.toml` names a `build` command (run with `CC` set to oqed-cc), a `run`
+command (the workload), and optionally `test` (deterministic output) and
+`bench` (prints one number, lower is better). Scanning:
 
 1. Builds the project with every compile logged and instrumented, then runs
    the workload, which counts calls per function (`profile_rt.c`).
 2. Preprocesses each logged source with its own flags and walks clang's JSON
    AST for function definitions located in the project (the `.i` line markers
    say where each one came from).
-3. Keeps those oqed can search today: integer arguments and return value in
-   registers, 1-4 arguments. Each becomes a target in `.oqed/targets/<name>/`
-   whose `func.c` is a slice of the preprocessed source: the function plus
-   the project typedefs, enums, constants and helpers it uses. A target is
-   dropped when the slice doesn't compile, or when the compiled function
-   calls something or reads global data (the harness runs it in isolation).
+3. Keeps leaf functions with 1-4 integer or pointer arguments and an
+   integer, pointer or void result. Each becomes a target in
+   `.oqed/targets/<name>/` whose `func.c` is a slice of the preprocessed
+   source: the function plus the project typedefs, structs, enums, constants
+   and helpers it uses. A target is dropped when the slice doesn't compile or
+   the compiled function calls something. Functions on integers that read no
+   global data run in the harness and can be proven (`oracle = "harness"`);
+   the rest are judged by the project itself (`oracle = "project"`, see
+   `oracle.py`), which needs `test` and `bench`.
 4. Ranks targets by call count, most-called first.
 """
 
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import os
 import re
@@ -38,9 +43,12 @@ from .toolchain import ToolError, compile_to_asm
 
 CONFIG = "oqed.toml"
 STATE = ".oqed"
-_PRELUDE = "#include <stdint.h>\n#include <stddef.h>\n#include <stdbool.h>\n#include <limits.h>\n"
+_PRELUDE = "".join(
+    f"#include <{h}.h>\n" for h in ("stdint", "stddef", "stdbool", "limits", "string", "stdlib", "assert")
+)
 _STORAGE = re.compile(r"\b(static|inline|__inline__|__inline|extern)\b\s*")
 _LOOPS = {"ForStmt", "WhileStmt", "DoStmt", "GotoStmt", "IndirectGotoStmt"}
+_GPRS = {f"r{n}" for n in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp")} | {f"r{i}" for i in range(8, 16)}
 _C_KEYWORDS = {"struct", "union", "enum", "const", "volatile", "restrict", "unsigned", "signed"}
 
 
@@ -50,6 +58,10 @@ class Project:
     build: str
     run: str
     cc: str = "clang"
+    test: str | None = None  # deterministic output; the oracle for functions that touch memory
+    bench: str | None = None  # prints one number, lower is better
+    bench_runs: int = 5
+    bench_unit: str = "units"
 
     @property
     def state(self) -> Path:
@@ -61,7 +73,16 @@ def load(root: Path) -> Project:
     if not path.is_file():
         raise FileNotFoundError(f"no {CONFIG} in {root} (needs `build` and `run` commands)")
     cfg = tomllib.loads(path.read_text())
-    return Project(root=root.resolve(), build=cfg["build"], run=cfg["run"], cc=cfg.get("cc", "clang"))
+    return Project(
+        root=root.resolve(),
+        build=cfg["build"],
+        run=cfg["run"],
+        cc=cfg.get("cc", "clang"),
+        test=cfg.get("test"),
+        bench=cfg.get("bench"),
+        bench_runs=cfg.get("bench_runs", 5),
+        bench_unit=cfg.get("bench_unit", "units"),
+    )
 
 
 @dataclass
@@ -73,6 +94,7 @@ class Function:
     location: str  # path relative to the project root, with the line
     calls: int = 0
     target: Path | None = None  # set when oqed can search it
+    oracle: str = "harness"  # "project" when judged by the project's test command
     skipped: str | None = None  # why not, otherwise
 
 
@@ -170,11 +192,12 @@ class _Unit:
         self.decls = [d for d in json.loads(out).get("inner", []) if _offset(d) is not None]
         self.by_id = {d["id"]: d for d in self.decls}
         self.defs = {d["name"]: d for d in self.decls if d.get("kind") == "FunctionDecl" and _body(d)}
-        self.types = {
-            d["name"]: d
-            for d in self.decls
-            if d.get("kind") in ("TypedefDecl", "RecordDecl", "EnumDecl") and d.get("name")
-        }
+        # A name can be a typedef and a struct tag at once (`typedef struct X X;`),
+        # and a struct can be declared before it is defined: keep them all.
+        self.types: dict[str, list[dict]] = {}
+        for d in self.decls:
+            if d.get("kind") in ("TypedefDecl", "RecordDecl", "EnumDecl") and d.get("name"):
+                self.types.setdefault(d["name"], []).append(d)
         self.enum_of = {
             c["id"]: d["id"]
             for d in self.decls
@@ -223,26 +246,48 @@ def _resolve(unit: _Unit, spelling: str) -> IntType | None:
     for _ in range(8):
         if (t := _int(spelling)) is not None:
             return t
-        td = unit.types.get(re.sub(r"\b(const|volatile)\b", "", spelling).strip())
-        if td is None or td.get("kind") != "TypedefDecl":
+        name = re.sub(r"\b(const|volatile)\b", "", spelling).strip()
+        td = next((x for x in unit.types.get(name, []) if x.get("kind") == "TypedefDecl"), None)
+        if td is None:
             return None
         spelling = td["type"].get("desugaredQualType", td["type"]["qualType"])
     return None
 
 
-def signature(unit: _Unit, d: dict) -> tuple[list[IntType], IntType] | str:
-    """The function's integer signature, or why it is out of scope."""
+@dataclass
+class Signature:
+    args: list[IntType]  # pointers are u64
+    ret: IntType  # u64 for pointers and void
+    ret_c: str | None = None  # the C return type when `ret` stands in for void or a pointer
+    pointers: bool = False
+
+
+def _value(unit: _Unit, spelling: str) -> tuple[IntType | None, bool]:
+    """An argument or return type as passed in a register, and whether it is a pointer."""
+    if spelling.rstrip().endswith("*"):
+        return "u64", True
+    return _resolve(unit, spelling), False
+
+
+def signature(unit: _Unit, d: dict) -> Signature | str:
+    """How the function passes its arguments and result, or why it is out of scope:
+    up to 4 integers or pointers in registers, an integer, pointer or no result."""
     t = d["type"]
     if "..." in t["qualType"]:
         return "variadic"
     parms = [x for x in d.get("inner", []) if x.get("kind") == "ParmVarDecl"]
     if not 1 <= len(parms) <= 4:
         return f"{len(parms)} arguments"
-    args = [_resolve(unit, p["type"].get("desugaredQualType", p["type"]["qualType"])) for p in parms]
-    ret = _resolve(unit, t["qualType"].split("(")[0])
-    if ret is None or any(a is None for a in args):
-        return f"not integers in registers: {t['qualType']}"
-    return args, ret  # type: ignore[return-value]
+    vals = [_value(unit, p["type"].get("desugaredQualType", p["type"]["qualType"])) for p in parms]
+    ret_spelling = t["qualType"].split("(")[0].strip()
+    if ret_spelling == "void":
+        ret, ret_ptr, ret_c = "u64", False, "void"
+    else:
+        ret, ret_ptr = _value(unit, ret_spelling)
+        ret_c = ret_spelling if ret_ptr else None
+    if ret is None or any(a is None for a, _ in vals):
+        return f"arguments or result not integers or pointers: {t['qualType']}"
+    return Signature([a for a, _ in vals], ret, ret_c, ret_ptr or any(p for _, p in vals))  # type: ignore[arg-type]
 
 
 def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
@@ -271,17 +316,27 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
             t = n.get("type")
             if isinstance(t, dict):
                 for ident in re.findall(r"[A-Za-z_]\w*", t.get("qualType", "")):
-                    if ident not in _C_KEYWORDS and ident in unit.types:
-                        todo.append(unit.types[ident])
+                    if ident not in _C_KEYWORDS:
+                        todo.extend(unit.types.get(ident, []))
     # Declarations from system headers come from the prelude's includes instead.
     spans = []
     for x in need.values():
         if x is d or root in unit.origin(_offset(x))[0].parents:  # type: ignore[arg-type]
             spans.append((*unit.span(x), x))
+    # Prototypes of the helpers go before the first function, so the order
+    # functions are defined in does not matter.
+    protos = [
+        unit.text[unit.span(x)[0] : _offset(_body(x))].decode().strip() + ";"  # type: ignore[arg-type]
+        for _, _, x in sorted(spans, key=lambda s: s[0])
+        if x.get("kind") == "FunctionDecl" and x is not d
+    ]
     out, last_end = [], -1
     for a, b, x in sorted(spans, key=lambda s: s[0]):
         if b <= last_end:
             continue  # inside a declaration already copied (e.g. the struct in a typedef)
+        if protos and x.get("kind") == "FunctionDecl":
+            out.append("\n".join(protos))
+            protos = []
         text = unit.text[a:b].decode()
         if x is d:
             body = _offset(_body(d))  # type: ignore[arg-type]
@@ -294,22 +349,29 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
     return _PRELUDE + "\n" + "\n\n".join(out) + "\n", loops
 
 
-def _check(target: Target) -> str | None:
-    """Why the harness can't run this target's compiled code, if it can't."""
+def _check(target: Target) -> tuple[str | None, bool]:
+    """Why oqed can't search this target, if it can't, and whether the
+    compiled code reads global data (so the harness can't run it alone)."""
+    reads_globals = False
     for compiler in ("clang", "gcc"):
         try:
             asm = compile_to_asm(target, compiler)
         except ToolError as e:
-            return f"{compiler}: {str(e).strip().splitlines()[-1][:120]}"
+            return f"{compiler}: {str(e).strip().splitlines()[-1][:120]}", False
         for line in asm.splitlines():
             ins = line.strip()
             if ins.startswith("call"):
-                return f"calls {ins.split(None, 1)[-1]} ({compiler})"
-            if ins.startswith("jmp") and not ins.split(None, 1)[-1].startswith(".L"):
-                return f"tail-calls {ins.split(None, 1)[-1]} ({compiler})"
-            if "rip" in ins:
-                return f"reads global data ({compiler})"
-    return None
+                return f"calls {ins.split(None, 1)[-1]} ({compiler})", False
+            # `jmp name` leaves the function; `jmp .L5` and `jmp rcx` (a switch's jump table) don't.
+            op = ins.split(None, 1)[-1] if ins.startswith("jmp") else ""
+            if re.fullmatch(r"[A-Za-z_][\w.@]*", op) and not op.startswith(".L") and op not in _GPRS:
+                return f"tail-calls {op} ({compiler})", False
+            reads_globals |= "rip" in ins
+    return None, reads_globals
+
+
+def slice_sha(src: str) -> str:
+    return hashlib.sha256(" ".join(src.split()).encode()).hexdigest()
 
 
 def discover(project: Project, rec: Path) -> Scan:
@@ -359,19 +421,39 @@ def discover(project: Project, rec: Path) -> Scan:
         tdir = targets_dir / name
         tdir.mkdir()
         (tdir / "func.c").write_text(src)
-        args = ", ".join(json.dumps(a) for a in sig[0])
-        (tdir / "meta.toml").write_text(
-            f'function = "{fn}"\ncategory = "project"\nargs = [{args}]\nret = "{sig[1]}"\n'
-            f"loop_free = {'false' if loops else 'true'}\n"
-            f'source = "{f.location}"\nlicense = "project"\n'
-        )
-        if why := _check(load_target(tdir)):
+        meta = {
+            "function": fn,
+            "category": "project",
+            "args": sig.args,
+            "ret": sig.ret,
+            "loop_free": not loops,
+            "source": f.location,
+            "license": "project",
+            "project": str(project.root),
+            "slice_sha": slice_sha(src),
+        }
+        if sig.ret_c:
+            meta["ret_c"] = sig.ret_c
+        (tdir / "meta.toml").write_text(_toml(meta))
+        why, reads_globals = _check(load_target(tdir))
+        if why is None and (sig.pointers or sig.ret_c or reads_globals):
+            if project.test and project.bench:
+                meta["oracle"] = "project"
+                (tdir / "meta.toml").write_text(_toml(meta))
+            else:
+                why = "needs `test` and `bench` in oqed.toml (takes pointers or reads global data)"
+        if why:
             f.skipped = why
             shutil.rmtree(tdir)
         else:
             f.target = tdir
+            f.oracle = meta.get("oracle", "harness")
     scan.functions.sort(key=lambda f: (-f.calls, f.target is None, f.name))
     return scan
+
+
+def _toml(meta: dict) -> str:
+    return "".join(f"{k} = {json.dumps(v)}\n" for k, v in meta.items())
 
 
 def scan(project: Project) -> Scan:

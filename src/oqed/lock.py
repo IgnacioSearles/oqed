@@ -34,6 +34,11 @@ class LockEntry(BaseModel):
     benchmark: str  # benchmarks/<name> the search ran on
     run: str
     candidate: str
+    # "project": judged by building the project and running its test command
+    # (the function touches memory); oqed-cc then only checks `slice_sha`, the
+    # hash of the function and the declarations it uses, against the source.
+    oracle: str = "harness"
+    slice_sha: str | None = None
 
 
 def _toml_str(s: str) -> str:
@@ -63,6 +68,8 @@ def dumps(entries: list[LockEntry]) -> str:
             f"benchmark = {_toml_str(e.benchmark)}",
             f"run = {_toml_str(e.run)}",
             f"candidate = {_toml_str(e.candidate)}",
+            *([f"oracle = {_toml_str(e.oracle)}"] if e.oracle != "harness" else []),
+            *([f"slice_sha = {_toml_str(e.slice_sha)}"] if e.slice_sha else []),
             'asm = """',
             e.asm.rstrip("\n").replace("\\", "\\\\").replace('"""', '\\"""'),
             '"""',

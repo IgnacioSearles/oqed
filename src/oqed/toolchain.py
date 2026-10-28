@@ -88,19 +88,21 @@ def wrap_function(body: str, name: str) -> str:
     )
 
 
-def assemble(body: str, name: str = "f") -> bytes:
-    """Assemble a function body and return its machine code bytes."""
+def assemble(body: str, name: str = "f", relocations: bool = False) -> bytes:
+    """Assemble a function body and return its machine code bytes. With
+    `relocations`, references to other symbols are allowed and left as zeros
+    (for code that will be linked into a project, not run alone)."""
     with tempfile.TemporaryDirectory() as d:
         src, obj = Path(d) / "f.s", Path(d) / "f.o"
         src.write_text(wrap_function(body, name))
         _run(["as", "--64", "-o", str(obj), str(src)])
-        return _symbol_bytes(obj, name)
+        return _symbol_bytes(obj, name, relocations)
 
 
-def _symbol_bytes(obj: Path, name: str) -> bytes:
+def _symbol_bytes(obj: Path, name: str, relocations: bool = False) -> bytes:
     with obj.open("rb") as f:
         elf = ELFFile(f)
-        if any(s.name.startswith(".rela") for s in elf.iter_sections()):
+        if not relocations and any(s.name.startswith(".rela") for s in elf.iter_sections()):
             raise ToolError("function needs relocations (memory or call references are unsupported)")
         sym = next(s for s in elf.get_section_by_name(".symtab").iter_symbols() if s.name == name)
         text = elf.get_section(sym["st_shndx"])

@@ -284,13 +284,16 @@ def optimize(
         from .search import SearchConfig, run_search
 
         if targets:
-            chosen = [load_target(n) for n in targets]
+            chosen = [_target(n) for n in targets]
         else:
             from . import project
 
             sc = project.scan(project.load(Path(".")))
             _print_scan(sc)
-            chosen = [load_target(f.target) for f in sc.targets[:top]]
+            locked = {e.function for e in lock.load(lock_path)} if lock_path.exists() else set()
+            chosen = [load_target(f.target) for f in sc.targets[:top] if f.function not in locked]
+            if skipped := [f.name for f in sc.targets[:top] if f.function in locked]:
+                typer.echo(f"already in {lock_path}, not searched again: {', '.join(skipped)}")
             if not chosen:
                 raise typer.Exit("nothing to search")
         from_run = asyncio.run(
@@ -339,6 +342,8 @@ def optimize(
                 benchmark=fid,
                 run=path.stem,
                 candidate=cid,
+                oracle=t.oracle,
+                slice_sha=t.slice_sha if t.oracle == "project" else None,
             )
         )
         flag = "" if st == "proven" else ", UNSAFE: tested only"

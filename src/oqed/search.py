@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
-from . import harness, inline, prompt
+from . import harness, inline, lock, prompt
 from .baseline import compute as compute_baseline
 from .events import (
     RUNS_DIR,
@@ -51,6 +51,7 @@ from .events import (
     TimingBreakdown,
 )
 from .isa import forbidden_instructions, isa_violations
+from .oracle import ProjectOracle
 from .providers import Completion, ProviderError
 from .targets import Target, c_signature
 from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, Compiler, ToolError, assemble, mca
@@ -131,6 +132,20 @@ LATENCY_NOTE = {
 }
 
 
+PROJECT_NOTE = (
+    "This function is part of a real project (the C above is sliced from it: the function, then "
+    "the declarations it uses). Your code becomes an inline asm block in every caller, with the "
+    "arguments in their usual registers (pointers as 64-bit values) and the result in rax. It may "
+    "read and write memory through its pointer arguments, and read globals by symbol name, exactly "
+    "as the C does. It must not touch the stack (no push, pop or call, nothing relative to rsp: "
+    "callers may keep data in the red zone) and must not use compiler-generated labels such as "
+    ".LJTI0_0 or .LCPI0_0 from the listings above: they exist only in the compiler's output. "
+    "It is judged by building the project with it and running the project's tests, whose output "
+    "must match the C build exactly, then by the project's benchmark: {bench} ({unit}, lower is "
+    "better; the C build measures {base:.2f})."
+)
+
+
 @dataclass
 class _Member:
     candidate_id: str
@@ -202,6 +217,7 @@ class FunctionSearch:
     done: bool = False
     budget: Budget = field(default_factory=Budget)
     spent: float = 0.0  # this function's share
+    oracle: ProjectOracle | None = None  # judges targets that touch memory (target.oracle == "project")
 
     def __post_init__(self) -> None:
         cfg = self.config
@@ -239,7 +255,33 @@ class FunctionSearch:
         cand = min((r.dep_cand for r in res.values()), key=lambda c: c.median)
         return cand, {c: r.dep_ref for c, r in res.items()}
 
+    async def _setup_project(self) -> None:
+        """Baselines for a target judged by the project oracle: the compilers'
+        listings for the prompt, and the project's benchmark on the C build."""
+        t, cfg, o = self.target, self.config, self.oracle
+        assert o is not None
+        bases = {c: compute_baseline(t, c, cfg.march, cfg.mcpu) for c in COMPILERS}
+        self.unit = o.project.bench_unit
+        base = await o.baseline(self.bench_lock)
+        self.base_cycles = {c: base for c in COMPILERS}
+        events = {}
+        for c, b in bases.items():
+            e = b.to_event()
+            e.cycles = base if c == o.project.cc else None
+            events[c] = e
+        self.emit(BaselineReady, source=t.c_source, signature=c_signature(t), **events)
+        note = PROJECT_NOTE.format(bench=o.project.bench, unit=self.unit, base=base.median)
+        self.context = prompt.target_context(
+            t,
+            [prompt.BaselineInfo(c, b.asm, b.mca.latency, b.mca.rthroughput, None) for c, b in bases.items()],
+            bases["clang"].mca.report,
+            note,
+        )
+
     async def setup(self) -> None:
+        if self.oracle is not None:
+            await self._setup_project()
+            return
         t, cfg = self.target, self.config
         bases = {c: compute_baseline(t, c, cfg.march, cfg.mcpu) for c in ("clang", "gcc")}
         self.ref_code = assemble(bases["clang"].asm)
@@ -418,13 +460,14 @@ class FunctionSearch:
 
         t0 = time.perf_counter()
         try:
-            code = await asyncio.to_thread(assemble, asm)
+            code = await asyncio.to_thread(assemble, asm, "f", self.oracle is not None)
         except ToolError as e:
             clock.harness_ms += (time.perf_counter() - t0) * 1000
             reject("assemble", str(e).splitlines()[-1].split("Error: ")[-1], asm, expl)
             return
         # Different spelling, same bytes (hex vs decimal immediates, aliases).
-        if code in self.seen_code:
+        # Not with relocations: references to different symbols assemble alike.
+        if code in self.seen_code and self.oracle is None:
             clock.harness_ms += (time.perf_counter() - t0) * 1000
             reject("duplicate", "same machine code as an earlier candidate", asm, expl)
             return
@@ -432,6 +475,9 @@ class FunctionSearch:
         if bad := forbidden_instructions(code) or isa_violations(code, cfg.march):
             clock.harness_ms += (time.perf_counter() - t0) * 1000
             reject("isa", "not allowed: " + ", ".join(bad), asm, expl)
+            return
+        if self.oracle is not None:
+            await self._evaluate_project(cid, asm, expl, code, clock, reject)
             return
         res = await asyncio.to_thread(harness.difftest, self.target, self.ref_code, code)
         clock.harness_ms += (time.perf_counter() - t0) * 1000
@@ -516,8 +562,74 @@ class FunctionSearch:
             return
         status: ProofStatus = "proven" if v.status == "equivalent" else "tested_only"
         self.emit(CandidateVerified, candidate_id=cid, status=status, reason=v.reason or None)
+        self._accept(_Member(cid, asm, expl, cyc, status, est.report))
 
-        entry = _Member(cid, asm, expl, cyc, status, est.report)
+    async def _evaluate_project(
+        self, cid: str, asm: str, expl: str, code: bytes, clock: _Clock, reject
+    ) -> None:
+        """Judge a candidate with the project oracle: substitute it, build, test, time."""
+        t, cfg, o = self.target, self.config, self.oracle
+        assert o is not None
+        try:
+            inline.written_registers(code, memory=True)
+        except inline.NotInlinable as e:
+            reject("inline", f"not inlinable: {e}", asm, expl)
+            return
+        entry = lock.LockEntry(
+            function=t.function,
+            args=t.args,
+            ret=t.ret,
+            march=cfg.march,
+            asm=asm,
+            status="tested",
+            speedup=1.0,
+            benchmark=t.name,
+            run=self.log.run_id,
+            candidate=cid,
+            oracle="project",
+            slice_sha=t.slice_sha,
+        )
+        t0 = time.perf_counter()
+        try:
+            v, cyc, base = await o.evaluate(entry, self.bench_lock)
+        finally:
+            clock.harness_ms += (time.perf_counter() - t0) * 1000
+        if not v.ok:
+            reject(
+                v.stage, v.reason, asm, expl, tried="fails the project's tests" if v.stage == "test" else None
+            )
+            return
+        assert cyc is not None and base is not None
+        try:
+            est = await asyncio.to_thread(mca, asm, t, cfg.mcpu)
+            lat, thr, report = est.latency, est.rthroughput, est.report
+        except ToolError:
+            lat, thr, report = 0.0, 0.0, ""
+        speedup = round(base.median / cyc.median, 3)
+        self.emit(
+            CandidateBenchmarked,
+            candidate_id=cid,
+            cycles=cyc,
+            mca_latency=lat,
+            mca_rthroughput=thr,
+            speedup_vs_clang=speedup,
+            speedup_vs_gcc=speedup,
+        )
+        if not _faster(cyc, base, cfg.min_gain):
+            slower = f"{cyc.median:.2f} {self.unit}, not faster than the C build ({base.median:.2f})"
+            reject("benchmark", slower, asm, expl, tried=f"passes the tests but {slower}")
+            self.near = sorted([*self.near, _Member(cid, asm, expl, cyc)], key=lambda m: m.cycles.median)[
+                : cfg.near_misses
+            ]
+            return
+        self.tried.append(f"{expl or '(no explanation)'} -> passes the tests, {cyc.median:.2f} {self.unit}")
+        reason = "judged by the project's tests and benchmark; no proof for code that touches memory yet"
+        self.emit(CandidateVerified, candidate_id=cid, status="tested_only", reason=reason)
+        self._accept(_Member(cid, asm, expl, cyc, "tested_only", report))
+
+    def _accept(self, entry: _Member) -> None:
+        """Add a correct, faster-than-C candidate to the population."""
+        cfg, cid, cyc, status = self.config, entry.candidate_id, entry.cycles, entry.status
         # Proven beats tested-only. Otherwise the incumbent stays best unless
         # beaten by more than the noise; other candidates only join the
         # population.
@@ -577,6 +689,14 @@ async def run_search(
     verifier = Verifier(workers=config.verifier_workers)
     summary: dict[str, FunctionSummary] = {}
     budget = Budget(config.max_usd)
+    oracles: dict[str, ProjectOracle] = {}
+    for t in targets:
+        if t.oracle == "project" and t.project and t.project not in oracles:
+            from .project import load as load_project
+
+            o = ProjectOracle(load_project(Path(t.project)))
+            await asyncio.to_thread(o.setup)
+            oracles[t.project] = o
     with EventLog(run_id, runs_dir) as log:
         if on_event:
             log.listeners.append(on_event)
@@ -592,7 +712,10 @@ async def run_search(
             if budget.exhausted:
                 print(f"[{t.name}] skipped: spending cap reached (${budget.spent:.2f})")
                 continue
-            fs = FunctionSearch(t, volume, reasoning, config, log, bench_lock, verifier, budget=budget)
+            oracle = oracles.get(t.project or "") if t.oracle == "project" else None
+            fs = FunctionSearch(
+                t, volume, reasoning, config, log, bench_lock, verifier, budget=budget, oracle=oracle
+            )
             await fs.setup()
             async with asyncio.TaskGroup() as tg:
                 for _ in range(config.concurrency):
@@ -602,4 +725,6 @@ async def run_search(
             print(f"note: {budget.unpriced} calls to models without a known price are not in the spend total")
         log.emit(RunFinished(run_id=run_id, summary=summary, cost_usd=round(budget.spent, 4)))
     verifier.close()
+    for o in oracles.values():
+        o.close()
     return run_id

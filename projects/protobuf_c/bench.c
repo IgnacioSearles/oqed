@@ -6,7 +6,12 @@
  * get_packed_size alone and for get_packed_size + pack (what a sender does),
  * and an FNV-1a hash of the packed bytes so two builds can be compared. The
  * packed batch is unpacked once and checked against the input.
+ *
+ *   pbc_bench           both timings, size and hash
+ *   pbc_bench --check   deterministic output only (size, hash, round trip): oqed's test oracle
+ *   pbc_bench --time    one number, size+pack ns/point: oqed's bench command
  */
+#include <string.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,8 +53,10 @@ static double now(void)
 	return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	int check = argc > 1 && strcmp(argv[1], "--check") == 0;
+	int time_only = argc > 1 && strcmp(argv[1], "--time") == 0;
 	static Telemetry__Point points[N_POINTS];
 	static Telemetry__Point *ptrs[N_POINTS];
 	static int64_t last[512];
@@ -76,7 +83,7 @@ int main(void)
 	uint8_t *buf = malloc(size);
 	double best_size = 1e9, best_pack = 1e9;
 	volatile size_t sink = 0;
-	for (int r = 0; r < REPS; r++) {
+	for (int r = 0; r < (check ? 1 : REPS); r++) {
 		double a = now();
 		sink += protobuf_c_message_get_packed_size(&batch.base);
 		double b = now();
@@ -106,8 +113,13 @@ int main(void)
 	uint64_t h = 0xcbf29ce484222325u;
 	for (size_t i = 0; i < size; i++)
 		h = (h ^ buf[i]) * 0x100000001b3u;
-	printf("get_packed_size %6.2f ns/point   size+pack %6.2f ns/point   %zu bytes   hash %016llx\n",
-	       best_size * 1e9 / N_POINTS, best_pack * 1e9 / N_POINTS, size, (unsigned long long) h);
+	if (check)
+		printf("%zu bytes   hash %016llx   round trip ok\n", size, (unsigned long long) h);
+	else if (time_only)
+		printf("%.3f\n", best_pack * 1e9 / N_POINTS);
+	else
+		printf("get_packed_size %6.2f ns/point   size+pack %6.2f ns/point   %zu bytes   hash %016llx\n",
+		       best_size * 1e9 / N_POINTS, best_pack * 1e9 / N_POINTS, size, (unsigned long long) h);
 	free(buf);
 	return 0;
 }

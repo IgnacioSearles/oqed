@@ -37,6 +37,13 @@ class Target(BaseModel):
     c_source: str
     path: Path
     reference_asm: str | None = None
+    # "harness": integers in registers, run in isolation, provable.
+    # "project": takes pointers, returns void or reads global data; judged by
+    # building the project with the candidate and running its test command.
+    oracle: str = "harness"
+    ret_c: str | None = None  # C return type when `ret` stands in for void or a pointer
+    project: str | None = None  # project root, for the project oracle
+    slice_sha: str | None = None  # hash of func.c's declarations, to spot source changes
 
     @property
     def c_file(self) -> Path:

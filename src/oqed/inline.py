@@ -71,10 +71,12 @@ class Mismatch(ToolError):
     program (an operand-binding bug, or a candidate that only works when called)."""
 
 
-def written_registers(code: bytes) -> set[str]:
+def written_registers(code: bytes, memory: bool = False) -> set[str]:
     """Full-width names of the registers `code` writes (gp: `rcx`, vector: `zmm1`),
     implicit operands included, `rip` and flags excluded. Raises NotInlinable
-    for memory or stack accesses."""
+    for stack accesses, and for any memory access unless `memory` (the block
+    then gets a "memory" clobber; the stack stays off limits because the
+    enclosing function may keep data in the red zone below `rsp`)."""
     factory = iced.InstructionInfoFactory()
     out: set[str] = set()
     for insn in iced.Decoder(64, code):
@@ -84,7 +86,7 @@ def written_registers(code: bytes) -> set[str]:
         regs = [(iced.RegisterExt.full_register(r.register), r.access) for r in info.used_registers()]
         if any(full == iced.Register.RSP for full, _ in regs):
             raise NotInlinable(f"uses the stack pointer ({insn})")
-        if info.used_memory():
+        if info.used_memory() and not memory:
             raise NotInlinable(f"accesses memory ({insn})")
         out |= {_REG_NAMES[full] for full, acc in regs if full != iced.Register.RIP and acc in _WRITES}
     return out
@@ -124,17 +126,22 @@ _ASM_ARG_TYPE = {
 }
 
 
-def asm_body(body: str, args: list[IntType], names: list[str], ret_cast: str | None = None) -> str:
+def asm_body(
+    body: str, args: list[IntType], names: list[str], ret_cast: str | None = None, memory: bool = False
+) -> str:
     """A C function body, on one line, that runs `body` as inline asm on the
     parameters `names` and returns the result (converted to the function's
-    return type by the `return`). The template is Intel syntax; dialect
-    alternatives switch to it when the compiler emits AT&T (the default) and
-    add nothing under `-masm=intel`."""
+    return type by the `return`; `ret_cast="void"` returns nothing). Pointer
+    parameters are passed as u64. With `memory`, the code may read and write
+    memory through its arguments (a "memory" clobber tells the compiler). The
+    template is Intel syntax; dialect alternatives switch to it when the
+    compiler emits AT&T (the default) and add nothing under `-masm=intel`."""
     if len(args) > len(CONSTRAINT):
         raise NotInlinable(f"more than {len(CONSTRAINT)} register arguments")
-    written = written_registers(assemble(body))
+    written = written_registers(assemble(body, relocations=memory), memory)
     decls = "".join(
-        f"{_ASM_ARG_TYPE[t]} __oqed_v{i} = {n}; " for i, (t, n) in enumerate(zip(args, names, strict=True))
+        f"{_ASM_ARG_TYPE[t]} __oqed_v{i} = ({_ASM_ARG_TYPE[t]}){n}; "
+        for i, (t, n) in enumerate(zip(args, names, strict=True))
     )
     outs, ins = ['"=a"(__oqed_r)'], []
     for i, reg in enumerate(ARG_REGS[: len(args)]):
@@ -145,11 +152,16 @@ def asm_body(body: str, args: list[IntType], names: list[str], ret_cast: str | N
     clobbers = [f'"{r}"' for r in sorted(written - bound) if not r.startswith(("xmm", "ymm", "zmm"))]
     clobbers += [f'"xmm{r[3:]}"' for r in sorted(written) if r.startswith(("xmm", "ymm", "zmm"))]
     clobbers.append('"cc"')
+    if memory:
+        clobbers.append('"memory"')
     template = "{.intel_syntax noprefix\\n|}" + _template(body) + "{.att_syntax prefix\\n|}"
+    cast = f"({ret_cast})" if ret_cast else ""
+    ret = "(void)__oqed_r;" if ret_cast == "void" else f"return {cast}__oqed_r;"
     return (
         f"{{ {decls}unsigned long long __oqed_r; "
-        f'__asm__("{template}" : {", ".join(outs)} : {", ".join(ins)} : {", ".join(clobbers)}); '
-        f"return {f'({ret_cast})' if ret_cast else ''}__oqed_r; }}"
+        f'__asm__{" volatile" if memory else ""}("{template}" : {", ".join(outs)} : {", ".join(ins)} : '
+        f"{', '.join(clobbers)}); "
+        f"{ret} }}"
     )
 
 
