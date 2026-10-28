@@ -146,17 +146,23 @@ def _ast(path: Path, name: str) -> list[dict]:
 def _int_type(spelling: str, path: Path, depth: int = 0) -> IntType | None:
     """Map a type spelling to an IntType, resolving typedefs through the AST.
     Pointers are u64, as passed in registers."""
-    s = re.sub(r"\b(const|volatile)\b", "", spelling).strip()
+    s = re.sub(r"\b(const|volatile|restrict|__restrict)\b", "", spelling).strip()
     if s.endswith("*"):
         return "u64"
     if s in _INT_TYPES:
         return _INT_TYPES[s]
+    if s.startswith("enum "):
+        return "i32"  # as `oqed scan` reads enums (project._resolve)
     if depth > 4 or not re.fullmatch(r"\w+", s):
         return None
     for d in _ast(path, s):
+        if d.get("kind") == "EnumDecl" and d.get("name") == s:
+            return "i32"
         if d.get("kind") == "TypedefDecl" and d.get("name") == s:
             t = d["type"]
-            return _int_type(t.get("desugaredQualType", t["qualType"]), path, depth + 1)
+            # An anonymous enum's typedef "desugars" to its own name.
+            desugared = t.get("desugaredQualType", t["qualType"])
+            return _int_type(t["qualType"] if desugared == s else desugared, path, depth + 1)
     return None
 
 

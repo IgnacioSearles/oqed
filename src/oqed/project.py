@@ -63,7 +63,7 @@ class Project:
     cc: str = "clang"
     test: str | None = None  # deterministic output; the oracle for functions that touch memory
     bench: str | None = None  # prints one number; None: oqed times `run`
-    bench_runs: int = 5
+    bench_runs: int = 7
     bench_unit: str = "units"
     bench_higher_is_better: bool = False  # e.g. MB/s
 
@@ -94,7 +94,7 @@ def load(root: Path) -> Project:
         cc=cfg.get("cc", "clang"),
         test=cfg.get("test"),
         bench=cfg.get("bench"),
-        bench_runs=cfg.get("bench_runs", 5),
+        bench_runs=cfg.get("bench_runs", 7),
         bench_unit=cfg.get("bench_unit", "units"),
         bench_higher_is_better=cfg.get("bench_higher_is_better", False),
     )

@@ -52,7 +52,7 @@ from .events import (
     TimingBreakdown,
 )
 from .isa import forbidden_instructions, isa_violations
-from .oracle import ProjectOracle
+from .oracle import BenchLock, ProjectOracle
 from .providers import Completion, ProviderError
 from .targets import Target, c_signature
 from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, Compiler, ToolError, assemble, mca
@@ -224,7 +224,7 @@ class FunctionSearch:
     reasoning: Model
     config: SearchConfig
     log: EventLog
-    bench_lock: asyncio.Lock
+    bench_lock: BenchLock
     verifier: Verifier
     best: list[_Member] = field(default_factory=list)  # beat -O3; best[0] is the incumbent
     near: list[_Member] = field(default_factory=list)  # correct, measured, not faster than -O3
@@ -256,9 +256,11 @@ class FunctionSearch:
     async def _measure_inline(self, asm: str) -> dict[Compiler, inline.InlineResult]:
         """Build with both compilers in parallel, then time one at a time."""
         t, march = self.target, self.config.march
-        built = await asyncio.gather(
-            *(asyncio.to_thread(inline.build, asm, t, c, march) for c in COMPILERS), return_exceptions=True
-        )
+        async with self.bench_lock.shared():
+            built = await asyncio.gather(
+                *(asyncio.to_thread(inline.build, asm, t, c, march) for c in COMPILERS),
+                return_exceptions=True,
+            )
         if errs := [b for b in built if isinstance(b, BaseException)]:
             for b in built:
                 if isinstance(b, inline.Built):
@@ -683,7 +685,7 @@ class FunctionSearch:
         )
         t0 = time.perf_counter()
         try:
-            v, cyc, base = await o.evaluate(entry, self.bench_lock)
+            v, cyc, base, won = await o.evaluate(entry, self.bench_lock)
         finally:
             clock.harness_ms += (time.perf_counter() - t0) * 1000
         if not v.ok:
@@ -707,8 +709,10 @@ class FunctionSearch:
             speedup_vs_clang=speedup,
             speedup_vs_gcc=speedup,
         )
-        if not _faster(cyc, base, cfg.min_gain):
+        if not (won and _faster(cyc, base, cfg.min_gain)):
             slower = f"{cyc.median:.2f} {self.unit}, not faster than the C build ({base.median:.2f})"
+            if won is False and cyc.median < base.median:
+                slower += ", not in enough of the paired runs"
             reject("benchmark", slower, asm, expl, tried=f"passes the tests but {slower}")
             self.near = sorted([*self.near, _Member(cid, asm, expl, cyc)], key=lambda m: m.cycles.median)[
                 : cfg.near_misses
@@ -777,7 +781,7 @@ async def run_search(
     runs_dir: Path = RUNS_DIR,
 ) -> str:
     run_id = run_id or f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
-    bench_lock = asyncio.Lock()
+    bench_lock = BenchLock()
     verifier = Verifier(workers=config.verifier_workers)
     summary: dict[str, FunctionSummary] = {}
     budget = Budget(config.max_usd)

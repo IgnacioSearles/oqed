@@ -290,7 +290,7 @@ def test_build_and_run_are_enough(oracle_proj, monkeypatch):
     monkeypatch.setattr(project, "MINIMAL", 0)
     import asyncio
 
-    from oqed.oracle import ProjectOracle
+    from oqed.oracle import BenchLock, ProjectOracle
 
     root = oracle_proj.root
     (root / "oqed.toml").write_text(
@@ -312,11 +312,11 @@ def test_build_and_run_are_enough(oracle_proj, monkeypatch):
             )  # fmt: skip
 
         async def judge(asm):
-            return await o.evaluate(entry(asm), asyncio.Lock())
+            return await o.evaluate(entry(asm), BenchLock())
 
-        v, cyc, base = asyncio.run(judge("\tmov eax, dword ptr [rdi]\n\tret\n"))
+        v, cyc, base, _ = asyncio.run(judge("\tmov eax, dword ptr [rdi]\n\tret\n"))
         assert v.ok and cyc.median > 0 and base.median > 0
-        v, _, _ = asyncio.run(judge("\txor eax, eax\n\tmov eax, dword ptr [rax]\n\tret\n"))
+        v, _, _, _ = asyncio.run(judge("\txor eax, eax\n\tmov eax, dword ptr [rax]\n\tret\n"))
         assert not v.ok and v.stage == "test" and "exited with" in v.reason
     finally:
         o.close()
@@ -349,3 +349,33 @@ def test_scan_takes_enums_const_pointers_and_many_arguments(tmp_path, monkeypatc
     t = load_target(by["many"].target)
     assert t.args == ["u64", "i32", "i32", "i32", "i32", "i32"]
     assert by["helper"].target is not None, by["helper"].skipped
+
+
+def test_benchmarks_need_enough_paired_wins_and_run_alone():
+    import asyncio
+
+    from oqed.oracle import BenchLock, wins_needed
+
+    assert wins_needed(7) == 6 and wins_needed(11) == 9 and wins_needed(3) == 4  # 3 runs: never
+    lock_, log = BenchLock(), []
+
+    async def build(i):
+        async with lock_.shared():
+            log.append(("build", i))
+            await asyncio.sleep(0.02)
+            log.append(("built", i))
+
+    async def bench():
+        await asyncio.sleep(0.005)
+        async with lock_:
+            log.append(("bench", 0))
+            await asyncio.sleep(0.02)
+            log.append(("benched", 0))
+
+    async def main():
+        await asyncio.gather(build(1), build(2), bench(), build(3))
+
+    asyncio.run(main())
+    b, e = log.index(("bench", 0)), log.index(("benched", 0))
+    assert e == b + 1  # nothing started or finished during the benchmark
+    assert {("built", 1), ("built", 2)} <= set(log[:b])  # builds already running finish first

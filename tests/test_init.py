@@ -8,7 +8,7 @@ MAIN = """#include <stdio.h>
 unsigned mix(unsigned x);
 int main(void) {
     unsigned h = 0;
-    for (unsigned i = 0; i < 9000000; i++) h += mix(i);
+    for (unsigned i = 0; i < 30000000; i++) h += mix(i);
     printf("%u\\n", h);
     return 0;
 }

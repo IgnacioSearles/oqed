@@ -75,6 +75,7 @@ def report(project: Project, runs: int = 11, log=print) -> dict:
             base.append(measure(project, plain))
             cand.append(measure(project, tuned))
         b_q, c_q = _quartiles(base), _quartiles(cand)
+        wins = sum(c < b for c, b in zip(cand, base, strict=True))
         speedup = round(b_q["median"] / c_q["median"], 3)
         result = {
             "project": project.root.name,
@@ -91,13 +92,15 @@ def report(project: Project, runs: int = 11, log=print) -> dict:
             "plain": b_q,
             "oqed": c_q,
             "speedup": speedup,
+            "faster_runs": wins,  # of `runs` alternating pairs
         }
         project.state.mkdir(exist_ok=True)
         (project.state / "report.json").write_text(json.dumps(result, indent=2) + "\n")
         log(
             f"[report] {project.root.name}: plain {b_q['median']:.4g} {project.unit} "
             f"(IQR {b_q['q3'] - b_q['q1']:.2g}), oqed {c_q['median']:.4g} (IQR {c_q['q3'] - c_q['q1']:.2g}): "
-            f"{speedup}x, {len(applied)} of {len(entries)} entries applied, {runs} runs each"
+            f"{speedup}x, faster in {wins} of {runs} paired runs, "
+            f"{len(applied)} of {len(entries)} entries applied"
         )
         return result
     finally:

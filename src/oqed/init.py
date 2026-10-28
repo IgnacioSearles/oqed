@@ -7,7 +7,7 @@ optionally `test` and `bench`. oqed then checks the proposal by running it:
 
 1. `build` with oqed-cc in record mode must compile C through `$CC` and link,
    and `run` must exit 0 and spend time in the project's code;
-2. `run` must take between 0.1 and 60 seconds of CPU time;
+2. `run` must take between 0.5 and 5 seconds of CPU time;
 3. `test`, if given, must pass; `bench`, if given, must print a number.
 
 When a step fails, the error goes back to the model for another proposal, a
@@ -39,7 +39,7 @@ _BUILD_FILES = [
 ]  # fmt: skip
 _SKIP_DIRS = {".git", ".oqed", "node_modules", "build", "dist", ".github", "doc", "docs"}
 MAX_FILES = 300
-RUN_CPU_MS = (200, 5_000)
+RUN_CPU_MS = (500, 5_000)
 
 SYSTEM = """You configure oqed, a tool that speeds up C projects by replacing hot \
 functions with faster assembly at build time. oqed needs to rebuild the project with its \
@@ -55,9 +55,11 @@ or for CMake `rm -rf .oqed/build && cmake -S . -B .oqed/build -DCMAKE_C_COMPILER
 release flags) and -march=x86-64-v3. Prefer static linking of the project's own library \
 into the program, so the program uses the code just built. Build only what the workload \
 needs (one program or test binary), not the whole world: no docs, no install, no shared \
-library variants if avoidable.
-- run: shell command, run in the project root, that runs a workload of about 1 second (0.3 to \
-3 seconds of CPU time) exercising the project's hot code: a test program or the project's \
+library variants if avoidable. If the workload needs generated input, generate it at the end \
+of `build` (inside the project directory), so `run` spends its time in the project's code.
+- run: shell command, run in the project root, that runs a workload of about 1 second (0.5 to \
+3 seconds of CPU time, nearly all of it in the project's code: no input generation or \
+interpreters here) exercising the project's hot code: a test program or the project's \
 own tool, on input that exists in the repo or that the command generates deterministically \
 (e.g. the repo's own source files concatenated, or `head -c 20000000 /dev/urandom` is NOT \
 deterministic so don't). It must do a FIXED AMOUNT OF WORK: oqed times it, so a benchmark \
@@ -142,7 +144,7 @@ def check(root: Path, toml: str, log=print) -> str | None:
     top = ", ".join(f"{name} {100 * t:.0f}%" for name, t in sorted(shares.items(), key=lambda x: -x[1])[:3])
     log(f"  run: {ms:.0f} ms CPU; most time in {top}")
     if not RUN_CPU_MS[0] <= ms <= RUN_CPU_MS[1]:
-        return f"`run` takes {ms:.0f} ms of CPU time; it should take about 1 second (0.3 to 3)"
+        return f"`run` takes {ms:.0f} ms of CPU time; it should take about 1 second (0.5 to 3)"
 
     if p.test:
         # The oracle runs `test` alone in a fresh copy of the project, after a build.

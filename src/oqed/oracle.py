@@ -15,7 +15,10 @@ in the harness on random inputs. For those the project is the test:
    status is compared.
 4. The `bench` command (one number) runs `bench_runs` times, alternating with
    a baseline build so both see the same machine state. Without a `bench`,
-   the CPU time of `run` is the number.
+   the CPU time of `run` is the number. Nothing else oqed runs (other
+   candidates' builds and tests) runs during a benchmark (`BenchLock`), and a
+   candidate is faster only if it wins enough of the paired runs that chance
+   is unlikely (`wins_needed`: 6 of 7, a one-sided sign test at p < 0.07).
 
 Passing says the project's tests can't tell the candidate from the C. It is
 not a proof: lock entries found this way are `tested` and need `--unsafe`.
@@ -24,11 +27,13 @@ not a proof: lock entries found this way are `tested` and need `--unsafe`.
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import shutil
 import statistics
 import subprocess
 import tempfile
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +42,54 @@ from .events import Cycles
 from .project import Project, cc_env
 
 TEST_TIMEOUT_S = 120
+SIGN_TEST_P = 0.07
+
+
+def wins_needed(runs: int) -> int:
+    """Paired runs a candidate must win so that a tie (each run a coin flip)
+    would do as well less than SIGN_TEST_P of the time."""
+    for k in range(runs + 1):
+        if sum(math.comb(runs, i) for i in range(k, runs + 1)) / 2**runs <= SIGN_TEST_P:
+            return k
+    return runs + 1  # too few runs to tell: never faster
+
+
+class BenchLock:
+    """Benchmarks run one at a time and alone: while one runs or waits, no
+    build or test starts (they'd compete for the cores, caches and clock).
+    Builds and tests share. `async with lock:` takes it for a benchmark."""
+
+    def __init__(self) -> None:
+        self._cond = asyncio.Condition()
+        self._benching = False
+        self._waiting = 0
+        self._busy = 0
+
+    async def __aenter__(self) -> None:
+        async with self._cond:
+            self._waiting += 1
+            await self._cond.wait_for(lambda: not self._benching and self._busy == 0)
+            self._waiting -= 1
+            self._benching = True
+
+    async def __aexit__(self, *exc) -> None:
+        async with self._cond:
+            self._benching = False
+            self._cond.notify_all()
+
+    @asynccontextmanager
+    async def shared(self):
+        async with self._cond:
+            await self._cond.wait_for(lambda: not self._benching and self._waiting == 0)
+            self._busy += 1
+        try:
+            yield
+        finally:
+            async with self._cond:
+                self._busy -= 1
+                self._cond.notify_all()
+
+
 _NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
 
@@ -144,32 +197,35 @@ class ProjectOracle:
     def _number(self, tree: Path) -> float:
         return measure(self.project, tree)
 
-    def _bench(self, tree: Path) -> tuple[Cycles, Cycles]:
+    def _bench(self, tree: Path) -> tuple[Cycles, Cycles, int]:
         cand, base = [], []
         for _ in range(self.project.bench_runs):
             base.append(self._number(self.base))
             cand.append(self._number(tree))
-        return _cycles(cand), _cycles(base)
+        wins = sum(c < b for c, b in zip(cand, base, strict=True))
+        return _cycles(cand), _cycles(base), wins
 
-    async def baseline(self, bench_lock: asyncio.Lock) -> Cycles:
+    async def baseline(self, bench_lock: BenchLock) -> Cycles:
         async with bench_lock:
             return _cycles(
                 [await asyncio.to_thread(self._number, self.base) for _ in range(self.project.bench_runs)]
             )
 
     async def evaluate(
-        self, entry: lock.LockEntry, bench_lock: asyncio.Lock
-    ) -> tuple[Verdict, Cycles | None, Cycles | None]:
+        self, entry: lock.LockEntry, bench_lock: BenchLock
+    ) -> tuple[Verdict, Cycles | None, Cycles | None, bool]:
         """Build and test the candidate; when it passes, time it against the
-        baseline. Returns the verdict, the candidate's and the baseline's numbers."""
+        baseline. Returns the verdict, the candidate's and the baseline's
+        numbers, and whether it won enough paired runs to count as faster."""
         tree = await self._trees.get()
         try:
-            v = await asyncio.to_thread(self._check, tree, entry)
+            async with bench_lock.shared():
+                v = await asyncio.to_thread(self._check, tree, entry)
             if not v.ok:
-                return v, None, None
+                return v, None, None, False
             async with bench_lock:
-                cand, base = await asyncio.to_thread(self._bench, tree)
-            return v, cand, base
+                cand, base, wins = await asyncio.to_thread(self._bench, tree)
+            return v, cand, base, wins >= wins_needed(self.project.bench_runs)
         finally:
             self._trees.put_nowait(tree)
 
