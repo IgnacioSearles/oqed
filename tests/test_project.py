@@ -391,3 +391,35 @@ def test_test_output_files_must_match(tmp_path):
     _, other = run_test("cp in.txt out.txt && echo done", tmp_path)
     assert differing_file(files, other) == "out.txt"
     assert differing_file(files, files) is None
+
+
+def test_candidates_that_break_the_abi_go_back_with_the_rules(oracle_proj, tmp_path, monkeypatch):
+    monkeypatch.setattr(project, "MINIMAL", 0)
+    import asyncio
+    from dataclasses import dataclass
+
+    from oqed.events import read_events
+    from oqed.providers import Completion
+    from oqed.search import SearchConfig, run_search
+
+    sc = project.scan(oracle_proj)
+    t = load_target(next(f for f in sc.functions if f.name == "load_le32").target)
+    bad = "<explanation>x</explanation><asm>\npush rbx\nmov eax, dword ptr [rdi]\nret\n</asm>"
+    good = "<explanation>y</explanation><asm>\nmov eax, dword ptr [rdi]\nret\n</asm>"
+    asked: list[str] = []
+
+    @dataclass
+    class Fixer:
+        model: str = "mock"
+
+        async def complete(self, messages, effort=None, max_tokens=0):
+            asked.append(messages[-1]["content"])
+            text = good if "calling convention" in asked[-1] else bad
+            return Completion(text=text, model="mock", model_ms=0.0)
+
+    cfg = SearchConfig(candidates=1, waves=False, concurrency=1)
+    run_id = asyncio.run(run_search([t], Fixer(), Fixer(), cfg, runs_dir=tmp_path / "runs"))
+    events = read_events(tmp_path / "runs" / f"{run_id}.jsonl")
+    assert next(e for e in events if e.type == "candidate_rejected").stage == "abi"
+    assert "returns with the stack not restored" in asked[1]
+    assert [e.candidate_id[-1] for e in events if e.type == "candidate_proposed"][1] == "r"

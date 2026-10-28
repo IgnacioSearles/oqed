@@ -43,7 +43,7 @@ def test_search_loop_with_mock(tmp_path):
     clang = f"<explanation>baseline</explanation><asm>\n{compile_to_asm(T, 'clang')}</asm>"
     mock = MockProvider([GOOD, WRONG, GARBAGE, AVX512, clang], seed=1)
     cfg = SearchConfig(
-        waves=False, candidates=20, concurrency=4, stall_after=3, reasoning_attempts=100, assemble_repairs=0
+        waves=False, candidates=20, concurrency=4, stall_after=3, reasoning_attempts=100, repairs=0
     )
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
@@ -102,7 +102,7 @@ def test_search_converges_after_fruitless_reasoning(tmp_path):
 def test_parents_are_population_members(tmp_path):
     mock = MockProvider([GOOD, WRONG, GARBAGE], seed=3)
     # Sequential, so each call sees the result of the one before.
-    cfg = SearchConfig(waves=False, candidates=12, concurrency=1, stall_after=100, assemble_repairs=0)
+    cfg = SearchConfig(waves=False, candidates=12, concurrency=1, stall_after=100, repairs=0)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     proposed = [e for e in events if e.type == "candidate_proposed"]
@@ -199,7 +199,7 @@ def test_inlined_speedups_compare_against_c_in_the_same_loop(tmp_path):
 def test_waves_repair_then_stop_when_nothing_is_correct(tmp_path):
     volume = MockProvider([WRONG, GARBAGE], seed=0)
     reasoning = MockProvider([WRONG], seed=0, model="mock-reasoning")
-    cfg = SearchConfig(candidates=40, assemble_repairs=0)
+    cfg = SearchConfig(candidates=40, repairs=0)
     run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     proposed = [e for e in events if e.type == "candidate_proposed"]

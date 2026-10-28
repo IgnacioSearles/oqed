@@ -83,9 +83,10 @@ class SearchConfig:
     # failed the tests): this many more waves with the errors in the prompt,
     # the last one led by the reasoning tier.
     repair_waves: int = 2
-    # A candidate that doesn't assemble goes back to the same model this many
-    # times, with each error, its line and the rule it breaks.
-    assemble_repairs: int = 1
+    # A candidate that doesn't assemble, or breaks the calling convention, goes
+    # back to the same model this many times, with each error, its line and the
+    # rule it breaks.
+    repairs: int = 1
     functions_in_parallel: int = 3
     stall_after: int = 8  # evaluated candidates without improvement before calling the reasoning tier
     reasoning_attempts: int = 2  # fruitless reasoning-tier calls before the function counts as converged
@@ -167,7 +168,12 @@ PROJECT_NOTE = (
     "it replaces the function's symbol and callers call it. It may use the stack, call other "
     "functions of the project by name (static helpers included) or tail-call them, and must keep "
     "the ABI: preserve rbx, rbp, r12-r15, keep rsp 16-byte aligned at each call, expect "
-    "caller-saved registers to be clobbered by calls. Either way the arguments arrive in their "
+    "caller-saved registers to be clobbered by calls. Across a call, rcx, rdx, rsi, rdi, r8-r11 "
+    "and every xmm/ymm register hold garbage: keep what is needed after the call in rbx, rbp, "
+    "r12-r15 (pushed on entry) or in a stack slot. rsp is 8 bytes off alignment on entry (the "
+    "return address), so the pushes plus any `sub rsp` before a call must total an odd multiple "
+    "of 8 (one push: aligned; two pushes: add `sub rsp, 8`); pop and free all of it before `ret` "
+    "or a tail call. Either way the arguments arrive in their "
     "usual registers (pointers as 64-bit values) and the result goes in rax; the code may read and "
     "write memory through its pointer arguments and read globals by symbol name, exactly as the C "
     "does. Don't use compiler-generated labels such as .LJTI0_0 or .LCPI0_0 from the listings "
@@ -504,8 +510,8 @@ class FunctionSearch:
 
     async def one(self, n: int, tier: ModelTier, repair: tuple[list, str, str, int] | None = None) -> bool:
         """Propose and evaluate one candidate; False when the call would not fit under the cap.
-        `repair`: (messages, reply, errors, attempt) of a candidate that didn't
-        assemble, to ask the same model to fix it."""
+        `repair`: (messages, reply, request, attempt) of a candidate that didn't
+        assemble or broke the ABI, to ask the same model to fix it."""
         cfg = self.config
         model = self.reasoning if tier == "reasoning" else self.volume
         effort = cfg.reasoning_effort if tier == "reasoning" else cfg.volume_effort
@@ -513,17 +519,13 @@ class FunctionSearch:
             messages, parent = self._messages(tier == "reasoning", n)
             cid = f"{self.target.name}-{n:03d}"
         else:
-            earlier, reply, problems, attempt = repair
+            earlier, reply, request, attempt = repair
             parent = f"{self.target.name}-{n:03d}" + "r" * (attempt - 1)
             cid = parent + "r"
             messages = [
                 *earlier,
                 {"role": "assistant", "content": reply},
-                {
-                    "role": "user",
-                    "content": f"That doesn't assemble:\n{problems}\n\nFix these lines (keep the rest of "
-                    "the idea) and reply with the whole function in the same format.",
-                },
+                {"role": "user", "content": request},
             ]
         worst = model.worst_cost(messages) if hasattr(model, "worst_cost") else None
         if not self.budget.reserve(worst):
@@ -543,9 +545,9 @@ class FunctionSearch:
         self.budget.add(comp.cost_usd, reserved=worst)
         self.spent += comp.cost_usd or 0.0
         clock = _Clock()
-        problems = None
+        request = None
         try:
-            problems = await self._evaluate(cid, parent, tier, comp, clock)
+            request = await self._evaluate(cid, parent, tier, comp, clock)
         finally:
             total = (time.perf_counter() - t_start) * 1000
             self.emit(
@@ -556,14 +558,14 @@ class FunctionSearch:
                 orchestrator_ms=max(0.0, total - comp.model_ms - clock.harness_ms - clock.verifier_ms),
             )
         attempt = repair[3] if repair else 0
-        if problems and attempt < cfg.assemble_repairs and not self.done:
-            await self.one(n, tier, (messages, comp.text, problems, attempt + 1))
+        if request and attempt < cfg.repairs and not self.done:
+            await self.one(n, tier, (messages, comp.text, request, attempt + 1))
         return True
 
     async def _evaluate(
         self, cid: str, parent: str | None, tier: ModelTier, comp: Completion, clock: _Clock
     ) -> str | None:
-        """Judge one reply. Returns the assembler's errors when it didn't assemble."""
+        """Judge one reply. Returns a request to fix it when it didn't assemble or broke the ABI."""
         cfg = self.config
 
         def reject(stage: RejectStage, reason: str, asm: str, expl: str, ce=None, tried: str | None = None):
@@ -609,7 +611,11 @@ class FunctionSearch:
             errs = await asyncio.to_thread(fixup.errors, asm)
             detail = "; ".join(x.describe() for x in errs[:4]) or str(e).splitlines()[-1].split("Error: ")[-1]
             reject("assemble", detail, asm, expl)
-            return "\n".join(f"- {x.describe()}" for x in errs[:8]) or detail
+            problems = "\n".join(f"- {x.describe()}" for x in errs[:8]) or detail
+            return (
+                f"That doesn't assemble:\n{problems}\n\nFix these lines (keep the rest of the idea) "
+                "and reply with the whole function in the same format."
+            )
         # Different spelling, same bytes (hex vs decimal immediates, aliases).
         # Not with relocations: references to different symbols assemble alike.
         if code in self.seen_code and self.oracle is None:
@@ -622,8 +628,7 @@ class FunctionSearch:
             reject("isa", "not allowed: " + ", ".join(bad), asm, expl)
             return
         if self.oracle is not None:
-            await self._evaluate_project(cid, asm, expl, code, clock, reject)
-            return
+            return await self._evaluate_project(cid, asm, expl, code, clock, reject)
         res = await asyncio.to_thread(harness.difftest, self.target, self.ref_code, code)
         clock.harness_ms += (time.perf_counter() - t0) * 1000
         if not res.passed:
@@ -711,8 +716,9 @@ class FunctionSearch:
 
     async def _evaluate_project(
         self, cid: str, asm: str, expl: str, code: bytes, clock: _Clock, reject
-    ) -> None:
-        """Judge a candidate with the project oracle: substitute it, build, test, time."""
+    ) -> str | None:
+        """Judge a candidate with the project oracle: substitute it, build, test, time.
+        Returns a request to fix it when it breaks the calling convention."""
         t, cfg, o = self.target, self.config, self.oracle
         assert o is not None
         # Inline asm or a whole function of its own: oqed-cc decides when it
@@ -721,7 +727,11 @@ class FunctionSearch:
         if inline.needs_function(asm, len(t.args)) and (bad := abi.violations(asm)):
             why = "breaks the calling convention: " + "; ".join(bad[:3])
             reject("abi", why, asm, expl, tried="breaks the ABI")
-            return
+            problems = "\n".join(f"- {b}" for b in bad[:8])
+            return (
+                f"That breaks the System V calling convention:\n{problems}\n\nFix these (keep the rest "
+                "of the idea) and reply with the whole function in the same format."
+            )
         entry = lock.LockEntry(
             function=t.function,
             args=t.args,

@@ -87,11 +87,20 @@ def _step(w: _Walk, insn, s: _State, info) -> _State:
     for reg, acc in regs:
         # Pushing a dead register (to align the stack) reads nothing that matters.
         if acc in _READS and reg in s.dead and reg != _R.RSP and m != iced.Mnemonic.PUSH:
-            w.report(insn, f"reads {_NAMES[reg]} after a call, which may have changed it")
+            w.report(
+                insn,
+                f"reads {_NAMES[reg]} after a call, which may have changed it: keep values needed "
+                "after a call in rbx, rbp, r12-r15 (saved on entry) or in a stack slot",
+            )
     dead, stack, modified = set(s.dead), s.stack, set(s.modified)
     if m == iced.Mnemonic.CALL:
         if stack is not None and (8 + _depth(stack)) % 16:
-            w.report(insn, "calls with rsp not 16-byte aligned")
+            depth = _depth(stack)
+            w.report(
+                insn,
+                f"calls with rsp not 16-byte aligned: {depth} bytes pushed or allocated since entry, "
+                f"and the return address makes it {depth + 8}; it must be a multiple of 16",
+            )
         dead = (dead | CALLER_SAVED) - _RESULT
         return _State(frozenset(dead), stack, frozenset(modified))
     if m == iced.Mnemonic.PUSH and stack is not None:

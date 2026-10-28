@@ -81,3 +81,8 @@ def test_calling_convention_violations_are_caught(name):
 
 def test_vzeroupper_after_a_call_reads_nothing():
     assert abi.violations("\tpush rbx\n\tcall g\n\tvzeroupper\n\tpop rbx\n\tret\n") == []
+
+
+def test_misaligned_call_says_how_far_off():
+    (msg,) = abi.violations("\tpush rbx\n\tpush rbp\n\tcall g\n\tpop rbp\n\tpop rbx\n\tret\n")
+    assert "16 bytes pushed" in msg and "24" in msg
