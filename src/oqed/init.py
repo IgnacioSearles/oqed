@@ -67,7 +67,8 @@ deterministic so don't). It must do a FIXED AMOUNT OF WORK: oqed times it, so a 
 mode that runs for a fixed time (many `-b` / `--bench` modes do) is useless here; if the \
 tool has such a mode, use a plain fixed job instead (e.g. compress and decompress a file a \
 set number of times). Several copies of the project run at once, so write files only \
-inside the project directory with relative paths, never in /tmp. No network.
+inside the project directory with relative paths, never in /tmp, and not in .oqed/ (oqed's \
+own). No network.
 - test (optional): a command whose exit status, and ideally output, show the code is \
 correct: the project's test suite or a round trip (compress then decompress and compare). \
 It runs ON ITS OWN in a fresh copy right after `build` (not after `run`), so it must create \
@@ -112,6 +113,17 @@ def parse_reply(text: str) -> str:
     return (m.group(1) if m else text).strip() + "\n"
 
 
+def _fresh_copy(root: Path, dest: Path) -> None:
+    """The project as committed (a git repo: earlier attempts may have left
+    generated files behind, and a config must not depend on them), else as is."""
+    archive = subprocess.run(["git", "archive", "HEAD"], cwd=root, capture_output=True, check=False)
+    if archive.returncode == 0:
+        dest.mkdir(parents=True)
+        subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    else:
+        shutil.copytree(root, dest, ignore=shutil.ignore_patterns(".oqed", ".git"))
+
+
 def check(root: Path, toml: str, log=print) -> str | None:
     """Run the proposed config; None if it works, else what went wrong."""
     try:
@@ -123,6 +135,11 @@ def check(root: Path, toml: str, log=print) -> str | None:
         return f"missing {', '.join(missing)}"
     if re.search(r"(^|[\s=\"'>])/tmp\b", " ".join(str(cfg.get(k, "")) for k in ("run", "test", "bench"))):
         return "the commands use /tmp; copies of the project run in parallel, so use relative paths"
+    if re.search(
+        r"(^|[\s=\"'>/])\.oqed(/|\b)",
+        " ".join(str(cfg.get(k, "")) for k in ("build", "run", "test", "bench")),
+    ):
+        return "the commands use .oqed/, which is oqed's own state directory; use another directory"
     (root / proj.CONFIG).write_text(toml)
     p = proj.load(root)
     log(f"  building with oqed-cc (record mode): {p.build}")
@@ -152,7 +169,7 @@ def check(root: Path, toml: str, log=print) -> str | None:
     # tree as the first did (a build that appends to its input file doesn't).
     with tempfile.TemporaryDirectory(prefix="oqed-init-") as d:
         fresh = Path(d) / root.name
-        shutil.copytree(root, fresh, ignore=shutil.ignore_patterns(".oqed", ".git"))
+        _fresh_copy(root, fresh)
         env = {**os.environ, "CC": p.cc}
         sizes = []
         for _ in range(2):
