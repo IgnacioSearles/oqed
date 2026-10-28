@@ -42,7 +42,9 @@ def test_parse_reply_variants():
 def test_search_loop_with_mock(tmp_path):
     clang = f"<explanation>baseline</explanation><asm>\n{compile_to_asm(T, 'clang')}</asm>"
     mock = MockProvider([GOOD, WRONG, GARBAGE, AVX512, clang], seed=1)
-    cfg = SearchConfig(waves=False, candidates=20, concurrency=4, stall_after=3, reasoning_attempts=100)
+    cfg = SearchConfig(
+        waves=False, candidates=20, concurrency=4, stall_after=3, reasoning_attempts=100, assemble_repairs=0
+    )
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     kinds = Counter(e.type for e in events)
@@ -100,7 +102,7 @@ def test_search_converges_after_fruitless_reasoning(tmp_path):
 def test_parents_are_population_members(tmp_path):
     mock = MockProvider([GOOD, WRONG, GARBAGE], seed=3)
     # Sequential, so each call sees the result of the one before.
-    cfg = SearchConfig(waves=False, candidates=12, concurrency=1, stall_after=100)
+    cfg = SearchConfig(waves=False, candidates=12, concurrency=1, stall_after=100, assemble_repairs=0)
     run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     proposed = [e for e in events if e.type == "candidate_proposed"]
@@ -197,7 +199,7 @@ def test_inlined_speedups_compare_against_c_in_the_same_loop(tmp_path):
 def test_waves_repair_then_stop_when_nothing_is_correct(tmp_path):
     volume = MockProvider([WRONG, GARBAGE], seed=0)
     reasoning = MockProvider([WRONG], seed=0, model="mock-reasoning")
-    cfg = SearchConfig(candidates=40)
+    cfg = SearchConfig(candidates=40, assemble_repairs=0)
     run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     proposed = [e for e in events if e.type == "candidate_proposed"]
@@ -234,3 +236,32 @@ def test_waves_search_several_functions_at_once(tmp_path):
     assert sum(e.type == "candidate_proposed" for e in events) == 2 * (
         cfg.first_wave + cfg.repair_waves * cfg.wave
     )
+
+
+def test_candidates_that_do_not_assemble_go_back_with_their_errors(tmp_path):
+    from dataclasses import dataclass
+
+    from oqed.providers import Completion
+
+    bad = GOOD.replace("<asm>\n", "<asm>\nadd r10, edx\n")
+    asked: list[str] = []
+
+    @dataclass
+    class Fixer:
+        model: str = "mock"
+
+        async def complete(self, messages, effort=None, max_tokens=0):
+            last = messages[-1]["content"]
+            asked.append(last)
+            return Completion(text=GOOD if "doesn't assemble" in last else bad, model="mock", model_ms=0.0)
+
+    cfg = SearchConfig(candidates=1, waves=False, concurrency=1)
+    run_id = asyncio.run(run_search([T], Fixer(), Fixer(), cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    rejected = [e for e in events if e.type == "candidate_rejected"]
+    assert rejected[0].stage == "assemble" and "line 1 `add r10, edx`" in rejected[0].reason
+    assert "line 1 `add r10, edx`" in asked[1] and "same width" in asked[1]
+    proposed = [e for e in events if e.type == "candidate_proposed"]
+    assert proposed[1].candidate_id == proposed[0].candidate_id + "r"
+    assert proposed[1].parent_id == proposed[0].candidate_id
+    assert events[-1].summary[T.name].best_candidate_id == proposed[1].candidate_id

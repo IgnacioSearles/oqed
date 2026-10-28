@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
-from . import abi, harness, inline, lock, prompt
+from . import abi, fixup, harness, inline, lock, prompt
 from .baseline import compute as compute_baseline
 from .events import (
     RUNS_DIR,
@@ -83,6 +83,9 @@ class SearchConfig:
     # failed the tests): this many more waves with the errors in the prompt,
     # the last one led by the reasoning tier.
     repair_waves: int = 2
+    # A candidate that doesn't assemble goes back to the same model this many
+    # times, with each error, its line and the rule it breaks.
+    assemble_repairs: int = 1
     functions_in_parallel: int = 3
     stall_after: int = 8  # evaluated candidates without improvement before calling the reasoning tier
     reasoning_attempts: int = 2  # fruitless reasoning-tier calls before the function counts as converged
@@ -105,6 +108,16 @@ class SearchConfig:
 def _faster(c: Cycles, bar: Cycles, min_gain: float) -> bool:
     """Faster by a margin that clears both the noise and `min_gain`."""
     return c.median < bar.median * (1 - min_gain) and c.median + c.spread / 2 < bar.median - bar.spread / 2
+
+
+def _fix(asm: str, relocations: bool) -> tuple[str, list[str]]:
+    """The unambiguous assembler errors fixed (see `fixup`), when it doesn't assemble as written."""
+    try:
+        assemble(asm, "f", relocations)
+        return asm, []
+    except ToolError:
+        fixed, notes = fixup.fix(asm)
+        return (fixed, notes) if notes else (asm, [])
 
 
 def _normalize(asm: str) -> str:
@@ -489,12 +502,29 @@ class FunctionSearch:
             self.done = True
             self.emit(SearchStopped, reason=reason, candidates=self.proposed)
 
-    async def one(self, n: int, tier: ModelTier) -> bool:
-        """Propose and evaluate one candidate; False when the call would not fit under the cap."""
+    async def one(self, n: int, tier: ModelTier, repair: tuple[list, str, str, int] | None = None) -> bool:
+        """Propose and evaluate one candidate; False when the call would not fit under the cap.
+        `repair`: (messages, reply, errors, attempt) of a candidate that didn't
+        assemble, to ask the same model to fix it."""
         cfg = self.config
         model = self.reasoning if tier == "reasoning" else self.volume
         effort = cfg.reasoning_effort if tier == "reasoning" else cfg.volume_effort
-        messages, parent = self._messages(tier == "reasoning", n)
+        if repair is None:
+            messages, parent = self._messages(tier == "reasoning", n)
+            cid = f"{self.target.name}-{n:03d}"
+        else:
+            earlier, reply, problems, attempt = repair
+            parent = f"{self.target.name}-{n:03d}" + "r" * (attempt - 1)
+            cid = parent + "r"
+            messages = [
+                *earlier,
+                {"role": "assistant", "content": reply},
+                {
+                    "role": "user",
+                    "content": f"That doesn't assemble:\n{problems}\n\nFix these lines (keep the rest of "
+                    "the idea) and reply with the whole function in the same format.",
+                },
+            ]
         worst = model.worst_cost(messages) if hasattr(model, "worst_cost") else None
         if not self.budget.reserve(worst):
             left = (self.budget.limit or 0) - self.budget.spent - self.budget.reserved
@@ -513,8 +543,9 @@ class FunctionSearch:
         self.budget.add(comp.cost_usd, reserved=worst)
         self.spent += comp.cost_usd or 0.0
         clock = _Clock()
+        problems = None
         try:
-            await self._evaluate(f"{self.target.name}-{n:03d}", parent, tier, comp, clock)
+            problems = await self._evaluate(cid, parent, tier, comp, clock)
         finally:
             total = (time.perf_counter() - t_start) * 1000
             self.emit(
@@ -524,9 +555,15 @@ class FunctionSearch:
                 verifier_ms=clock.verifier_ms,
                 orchestrator_ms=max(0.0, total - comp.model_ms - clock.harness_ms - clock.verifier_ms),
             )
+        attempt = repair[3] if repair else 0
+        if problems and attempt < cfg.assemble_repairs and not self.done:
+            await self.one(n, tier, (messages, comp.text, problems, attempt + 1))
         return True
 
-    async def _evaluate(self, cid: str, parent: str | None, tier: ModelTier, comp: Completion, clock: _Clock):
+    async def _evaluate(
+        self, cid: str, parent: str | None, tier: ModelTier, comp: Completion, clock: _Clock
+    ) -> str | None:
+        """Judge one reply. Returns the assembler's errors when it didn't assemble."""
         cfg = self.config
 
         def reject(stage: RejectStage, reason: str, asm: str, expl: str, ce=None, tried: str | None = None):
@@ -551,6 +588,11 @@ class FunctionSearch:
             self.emit(CandidateRejected, candidate_id=cid, stage="parse", reason=reason)
             self.stall += 1
             return
+        fixed, fixes = await asyncio.to_thread(_fix, asm, self.oracle is not None)
+        if fixes:
+            print(f"[{self.target.name}] {cid}: fixed {'; '.join(fixes)}")
+            expl = (expl + " " if expl else "") + f"[oqed fixed: {'; '.join(fixes)}]"
+            asm = fixed
         self._propose(cid, parent, tier, comp, asm, expl)
 
         key = _normalize(asm)
@@ -564,8 +606,10 @@ class FunctionSearch:
             code = await asyncio.to_thread(assemble, asm, "f", self.oracle is not None)
         except ToolError as e:
             clock.harness_ms += (time.perf_counter() - t0) * 1000
-            reject("assemble", str(e).splitlines()[-1].split("Error: ")[-1], asm, expl)
-            return
+            errs = await asyncio.to_thread(fixup.errors, asm)
+            detail = "; ".join(x.describe() for x in errs[:4]) or str(e).splitlines()[-1].split("Error: ")[-1]
+            reject("assemble", detail, asm, expl)
+            return "\n".join(f"- {x.describe()}" for x in errs[:8]) or detail
         # Different spelling, same bytes (hex vs decimal immediates, aliases).
         # Not with relocations: references to different symbols assemble alike.
         if code in self.seen_code and self.oracle is None:

@@ -29,7 +29,18 @@ Rules for the code you write:
 - Every instruction must contribute to the result. Padding a known answer with unused
   instructions to make it look new wastes an attempt.
 - Allowed ISA: x86-64-v3 (up to AVX2, BMI1, BMI2, LZCNT, POPCNT, MOVBE, FMA, F16C).
-  Not allowed: AVX-512, PCLMULQDQ, AES, SHA, ADX, or anything newer.
+  Not allowed: AVX-512, PCLMULQDQ, AES, SHA, ADX, or anything newer (vpbroadcastd from a
+  general register is AVX-512: `vmovd xmm0, eax` then `vpbroadcastd xmm0, xmm0`).
+
+The assembler rejects these; check every line before replying:
+- Both operands the same width (`add r10, edx` is invalid), except movzx/movsx/movsxd. A
+  32-bit write zeroes the upper half, so widen with `mov r32, r32` or `movsxd r64, r32`.
+- Variable shift counts only in cl (`shl rax, cl`); shlx/shrx/sarx/bzhi take same-width registers.
+- Immediates are at most 32 bits, sign-extended (mov to memory, cmp, test, add, and):
+  load a wider constant into a register first.
+- An address is base + index*{1,2,4,8} + displacement: at most two registers. A
+  RIP-relative symbol takes no index: `lea r11, [rip+table]`, then `[r11+rax*4]`.
+- Real mnemonics only: sete/setb/cmovne..., no AT&T suffixes (bsfl, movl). Unique labels.
 
 Optimize for latency of one call (the critical path from arguments to rax), then
 for fewer instructions/uops. Correctness is checked by testing and an SMT proof,
