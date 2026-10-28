@@ -9,9 +9,11 @@ compiled into the same loop by clang and gcc, in the same run. `bench="call"`
 times through call/ret instead (adds ~4.7 ticks per call and can rank
 candidates wrongly).
 
-Candidates that beat -O3 are then checked by the SMT verifier: `proven` only
-when it decides equivalence, `tested_only` when it can't decide, and rejected
-with a counterexample when it finds one.
+Candidates that beat -O3 and could become the best are then checked by the
+SMT verifier: `proven` only when it decides equivalence, `tested_only` when it
+can't decide, and rejected with a counterexample when it finds one. A
+candidate that is not faster than a proven best skips the proof (it could not
+ship) and joins the population as `tested_only`.
 """
 
 from __future__ import annotations
@@ -484,7 +486,19 @@ class FunctionSearch:
         # Listed before the proof: proofs can take a while, and meanwhile other
         # calls should know this idea is taken.
         self.tried.append(f"{expl or '(no explanation)'} -> beats -O3 at {cyc.median:.2f} {self.unit}")
-        # Proofs are the expensive stage, so only candidates that beat -O3 get one.
+        # Proofs are the expensive stage, so only candidates that could become
+        # the best get one: nothing beats a proven incumbent without being faster.
+        inc = self.best[0] if self.best else None
+        if inc is not None and inc.status == "proven" and not _faster(cyc, inc.cycles, 0.0):
+            reason = f"proof skipped: not faster than the proven best ({inc.cycles.median:.2f} {self.unit})"
+            self.emit(CandidateVerified, candidate_id=cid, status="tested_only", reason=reason)
+            self.best[1:] = sorted(
+                [*self.best[1:], _Member(cid, asm, expl, cyc, "tested_only", est.report)],
+                key=lambda b: b.cycles.median,
+            )
+            del self.best[cfg.population :]
+            self.stall += 1
+            return
         v = await self.verifier.check_async(self.target, self.ref_code, code)
         clock.verifier_ms = v.elapsed_ms
         if v.status == "not_equivalent":

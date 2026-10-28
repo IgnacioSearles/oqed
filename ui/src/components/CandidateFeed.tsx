@@ -1,5 +1,5 @@
 import type { Candidate, FunctionView } from "../model";
-import { fmtTokens, fmtUsd, modelLabel } from "../model";
+import { fmtTokens, fmtUsd, modelLabel, proofSkipped } from "../model";
 import { Panel } from "./Panel";
 
 const STAGE: Record<string, string> = {
@@ -31,6 +31,13 @@ function outcome(c: Candidate) {
     return (
       <span className="text-good">
         ✓ proven <span className="text-ink-2">{c.cycles?.median.toFixed(2)} ticks</span>
+      </span>
+    );
+  }
+  if (c.status === "tested_only" && proofSkipped(c)) {
+    return (
+      <span className="text-ink-3" title={c.statusReason ?? undefined}>
+        tested, slower than best <span className="text-ink-2">{c.cycles?.median.toFixed(2)} ticks</span>
       </span>
     );
   }

@@ -259,6 +259,10 @@ export function funnel(fn: FunctionView): { proposed: number; rows: FunnelRow[];
   };
 }
 
+/** The search skips the proof for a candidate that is not faster than a proven
+ * best: it could not ship, so it stays tested only. */
+export const proofSkipped = (c: Candidate) => c.statusReason?.startsWith("proof skipped") ?? false;
+
 /** USD per million tokens (input, output), mirroring oqed.providers. List
  * prices without the cached-input discount, so estimates err high. */
 const PRICES: Record<string, [number, number]> = {

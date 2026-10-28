@@ -152,6 +152,24 @@ def test_reasoning_tier_is_skipped_when_its_worst_case_does_not_fit(tmp_path, ca
     assert "mock-reasoning not called" in capsys.readouterr().out
 
 
+def test_candidates_not_faster_than_a_proven_best_skip_the_proof(tmp_path):
+    # Correct and faster than -O3, but a few extra instructions slower than GOOD.
+    pad = "mov edx, eax\nimul edx, edx\n" * 2
+    slower = GOOD.replace("ret\n</asm>", pad + "ret\n</asm>")
+    slower = slower.replace("lzcnt + 64-bit shrx", "padded")
+    mock = MockProvider([GOOD, slower], seed=1)
+    cfg = SearchConfig(candidates=8, concurrency=1, stall_after=100)
+    run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    proposed = {e.candidate_id: e.explanation for e in events if e.type == "candidate_proposed"}
+    verified = [e for e in events if e.type == "candidate_verified"]
+    best = [e.candidate_id for e in events if e.type == "new_best"]
+    assert [proposed[c] for c in best] == ["lzcnt + 64-bit shrx"]
+    after = [e for e in verified if proposed[e.candidate_id] == "padded" and e.candidate_id > best[0]]
+    assert after, "seed should propose the padded candidate after the best"
+    assert all(e.status == "tested_only" and "proof skipped" in e.reason for e in after)
+
+
 def test_stack_using_candidate_is_rejected_as_not_inlinable(tmp_path):
     # Correct (passes testing and could be proven) but pushes to the stack.
     stack = GOOD.replace("<asm>\n", "<asm>\npush rbx\npop rbx\n")
