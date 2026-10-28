@@ -6,7 +6,7 @@ oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C function, i
 
 Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
-> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. The build integration (`oqed optimize` → `oqed.lock` → `oqed-cc`) works on the stb_image testbed. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. The build integration (`oqed optimize` → `oqed.lock` → `oqed-cc`) works on two real projects: on protobuf-c it makes `get_packed_size` 1.57× faster end to end with clang (1.24× with gcc). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 
@@ -28,13 +28,15 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 - **Correctness first:** "proven equivalent" is claimed only when symbolic execution (angr/VEX) plus Z3 shows the candidate matches the reference for every ABI-valid input: return value at its width, callee-saved registers and stack pointer. Loops (cycles in the control flow; a backward jump to a shared tail is fine), non-stack memory, instructions with undefined results (`bsf`/`bsr` on zero) and solver timeouts give "unknown", shown as **tested, not proven**. SMT counterexamples are replayed on the CPU. `tests/test_verify.py` holds a suite of deliberately wrong rewrites (wrapping shift counts, reading undefined upper register bits, off-by-one, wrong flag, wrong sign extension, clobbered `rbx`, unbalanced stack, a bug on a single input that random testing misses, ...), and none may be proven.
 - **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
 - **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
-- **Inlined latency:** the search measures every candidate as an `asm` statement inside a loop where each result feeds the next call, against the C compiled into the same loop by clang and gcc in the same run (`--bench call` restores call/ret timing). Candidates that touch memory or the stack are rejected as not inlinable. `oqed inline-bench <run>` turns each winner into a GNU `asm` statement (argument registers bound by constraint, exact clobbers from the decoded instructions), times it against the C source inside a dependent loop (latency) and an independent loop (throughput, with and without the compiler's auto-vectorization), and re-proves the bytes the compiler emits around the `asm` statement. Timing through `call`/`ret` adds ~4.7 ticks per call and can rank candidates wrongly: on stb_image, call-mode wins of 1.2–1.4× on `paeth` and `blinn_8x8` came out at 1.00× inlined, and `bitreverse16` went from 1.17× to 0.52×. Real missed-idiom wins were understated instead: re-measured inlined, `clz_smear` went from 2.35× to 6.5×, `parity` from 1.74× to 3.5×, `round_up_pow2` from 2.2× to 2.6×, and stb's `high_bit` (lzcnt) is 4.3×. Against a loop the compiler auto-vectorizes, every one of them loses throughput (0.2–0.97×).
+- **Inlined latency:** the search measures every candidate as an `asm` statement inside a loop where each result feeds the next call, against the C compiled into the same loop by clang and gcc in the same run (`--bench call` restores call/ret timing). Candidates that touch memory or the stack are rejected as not inlinable. `oqed inline-bench <run>` turns each winner into a GNU `asm` statement (argument registers bound by constraint, exact clobbers from the decoded instructions), times it against the C source inside a dependent loop (latency) and an independent loop (throughput, with and without the compiler's auto-vectorization), and re-proves the bytes the compiler emits around the `asm` statement. Timing through `call`/`ret` adds ~4.7 ticks per call and can rank candidates wrongly: on stb_image, call-mode wins of 1.2–1.4× on `paeth` and `blinn_8x8` came out at 1.00× inlined, and `bitreverse16` went from 1.17× to 0.52×. Real missed-idiom wins were understated instead: re-measured inlined, `clz_smear` went from 2.35× to 6.5×, `parity` from 1.74× to 3.5×, `round_up_pow2` from 2.2× to 2.6×, and stb's `high_bit` (lzcnt) is 4.3×. Against a loop the compiler auto-vectorizes, every one of them loses throughput (0.2–0.97×). The loops replay 65,536 shuffled inputs: with the 1,024 used at first, the branch predictor learned the sequence, and protobuf-c's branchy `uint64_size` timed at ~3 ticks instead of the ~12 it costs when its branches miss.
 - **No assembly in your codebase:** `oqed optimize` records proven winners in a reviewable `oqed.lock`, and `oqed-cc` is a drop-in compiler wrapper (`make CC=oqed-cc`, or `CC="oqed-cc --cc=gcc"`) that applies them at build time, with no network calls. For each C file it preprocesses with your flags (so functions in headers are found), locates each lock entry's function with clang's JSON AST, replaces the body with the asm as an inline `asm` statement, and then:
   - **proves the substitution against your function as it is now**, compiled by your compiler with your flags: a wrapper calling the function is compiled from the original and from the rewritten source, and the two are checked equivalent with the SMT verifier. A stale entry, a changed signature, or a `-march` without the instructions the entry needs keeps the C;
   - **keeps the C if any loop stops auto-vectorizing** (compiler vectorization remarks with and without the substitution);
   - reports every decision on stderr, caches it (`~/.cache/oqed/cc`), and on any internal error compiles the original command unchanged.
 
-  On `projects/stb_image`, `make compare` builds with and without `oqed.lock` (`stbi__high_bit` → `lzcnt`) and checks the decoded pixels are identical.
+  `make compare` in a testbed builds with and without `oqed.lock` and checks the output is identical:
+  - **`projects/protobuf_c`** (protobuf-c v1.5.1 packing 4096 telemetry points): `uint64_size` and `uint32_size`, protobuf-c's varint-length helpers, are branch chains in both compilers and run on every integer field. The search replaced them with `lzcnt` and a multiply-shift (2.75× and 1.45× inlined latency, proven, $0.08 of contributor calls). End to end, `get_packed_size` goes from 32.4 to 20.6 ns per point with clang (1.57×) and from 33.4 to 26.9 with gcc (1.24×). The full size + pack path, which also writes the bytes, goes from 74.9 to 64.9 ns (1.15×) and from 79.3 to 73.0 (1.09×). Packed bytes are identical. The gain comes from mispredicted branches, so it depends on the data: values of mixed magnitude here, while all-small values would see little change.
+  - **`projects/stb_image`**: `stbi__high_bit` → `lzcnt`, decoded pixels identical. Nothing changes measurably because stb only calls it while parsing BMP headers.
 
 ## Quick start
 
@@ -73,7 +75,7 @@ npm run build    # static site in ui/dist with the curated runs in runs/demo/
 src/oqed/      orchestrator: search loop, providers, prompts, testing, toolchain wrappers, ISA check, events, CLI
 harness/       Rust (PyO3) extension: runs and times candidates in a forked, sandboxed child
 benchmarks/    one directory per target: func.c + meta.toml
-projects/      small real projects for end-to-end checks (stb_image decode benchmark)
+projects/      small real projects for end-to-end checks (protobuf-c packing, stb_image decoding)
 tests/         test suite
 ui/            web UI (Vite + React + TypeScript + Tailwind), reads runs/*.jsonl
 runs/          JSONL event logs (curated demo runs in runs/demo/)
@@ -90,11 +92,13 @@ Each `runs/<run_id>.jsonl` file holds one event per line (`baseline_ready`, `can
 - clamp and saturating-add primitives modeled on FFmpeg's `av_clip*` / `av_sat_add32`
 - hash finalizers (MurmurHash3 `fmix32`/`fmix64`, xxHash avalanche)
 - six helpers copied from [stb_image](https://github.com/nothings/stb) v2.30 (`stbi_*`: PNG Paeth predictor, JPEG clamp, luma, CMYK blend, zlib bit reversal, BMP high bit), with `projects/stb_image/` as an end-to-end testbed
+- protobuf-c's varint-length helpers (`pbc_uint32_size`, `pbc_uint64_size`), with `projects/protobuf_c/` as an end-to-end testbed
 
 ## Credits
 
 - Bit-manipulation targets follow algorithms from Henry S. Warren Jr., *Hacker's Delight* (2nd ed.). The implementations here are our own.
 - `stb_image.h` / `stb_image_write.h` by Sean Barrett (public domain or MIT), vendored unchanged in `projects/stb_image/`.
+- `protobuf-c.c` / `protobuf-c.h` from [protobuf-c](https://github.com/protobuf-c/protobuf-c) v1.5.1 by Dave Benson and the protobuf-c authors (BSD 2-Clause), vendored unchanged in `projects/protobuf_c/`.
 - `fmix32` / `fmix64` are from MurmurHash3 by Austin Appleby (public domain).
 - xxHash avalanche constants come from xxHash by Yann Collet (BSD 2-Clause). The finalizer implementations here are our own.
 - Built on [angr](https://angr.io), [Z3](https://github.com/Z3Prover/z3), [iced-x86](https://github.com/icedland/iced), and LLVM's `llvm-mca`.

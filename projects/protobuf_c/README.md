@@ -25,3 +25,26 @@ Values are mixed the way metrics are: 40% under 128, 30% under 2^20, 20% under
 2^40 and 10% negative. `pbc_bench` reports the best time per point for
 `get_packed_size` and for `get_packed_size` + `pack`, checks a round trip
 through `unpack`, and prints an FNV-1a hash of the packed bytes.
+
+## Result (laptop, Zen 3 under WSL2, best of 200, three runs each)
+
+`oqed.lock` comes from run `20261028-021819-67bd` (24 contributor-Spark candidates
+per function, $0.08):
+
+| function | oqed asm | inlined latency vs -O3 |
+|---|---|---|
+| `uint64_size` | `lzcnt rax, rdi; lea edx, [rax+rax*8]; shl edx, 2; mov eax, 2560; sub eax, edx; shr eax, 8` | 2.75× |
+| `uint32_size` | `lzcnt eax, edi; lea ecx, [rax+rax*8]; mov eax, 352; sub eax, ecx; shr eax, 6` | 1.45× |
+
+`make compare` (ns per point; packed bytes identical in every build):
+
+| compiler | get_packed_size plain | oqed-cc | | size + pack plain | oqed-cc | |
+|---|---|---|---|---|---|---|
+| clang | 32.4 | 20.6 | **1.57×** | 74.9 | 64.9 | **1.15×** |
+| gcc | 33.4 | 26.9 | **1.24×** | 79.3 | 73.0 | **1.09×** |
+
+oqed-cc proves both substitutions against protobuf-c's own functions with each
+compiler. Neither one stops a loop from vectorizing. The gain comes from
+branch mispredictions on values of mixed magnitude: a batch where every value
+fits in one byte would see little change, since the branchy code predicts
+well there.
