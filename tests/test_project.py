@@ -112,6 +112,12 @@ ORACLE_LIB = """
 uint32_t load_le32(const uint8_t *p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
+__attribute__((noinline)) static uint32_t mix(uint32_t x) { return x * 0x9e3779b1u ^ (x >> 15); }
+uint32_t sum_mixed(const uint32_t *p, int n) {
+    uint32_t s = 0;
+    for (int i = 0; i < n; i++) s += mix(p[i]);
+    return s;
+}
 """
 ORACLE_MAIN = """
 #include <stdint.h>
@@ -119,6 +125,7 @@ ORACLE_MAIN = """
 #include <string.h>
 #include <time.h>
 uint32_t load_le32(const uint8_t *p);
+uint32_t sum_mixed(const uint32_t *p, int n);
 int main(int argc, char **argv) {
     static uint8_t buf[4096];
     for (int i = 0; i < 4096; i++) buf[i] = (uint8_t)(i * 37 + 11);
@@ -131,7 +138,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--time") == 0)
         printf("%.1f\\n", (b.tv_sec - a.tv_sec) * 1e9 + (b.tv_nsec - a.tv_nsec));
     else
-        printf("%08x\\n", h);
+        printf("%08x %08x\\n", h, sum_mixed((const uint32_t *)buf, 1000 + argc));
     return 0;
 }
 """
@@ -182,7 +189,8 @@ def test_project_oracle_judges_memory_candidates(oracle_proj, tmp_path, monkeypa
     assert set(outcome) == set(answers), outcome
     assert outcome["good"][0] in ("passed", "benchmark")
     assert outcome["wrong"][0] == "test" and "output differs" in outcome["wrong"][1]
-    assert outcome["stack"] == ("inline", "not inlinable: uses the stack pointer (push rbx)")
+    # Uses the stack, so it can't be inline asm: it becomes the whole (naked) function.
+    assert outcome["stack"][0] in ("passed", "benchmark"), outcome["stack"]
     # Compiler-only labels and unknown symbols don't exist in the project build.
     for k in ("label", "missing"):
         assert outcome[k][0] == "inline" and "does not build" in outcome[k][1], outcome[k]
@@ -210,3 +218,63 @@ def test_project_entry_applies_only_to_the_tested_source(oracle_proj, monkeypatc
     (root / "lib.c").write_text(ORACLE_LIB.replace("p[3] << 24", "p[3] << 24 | 0"))
     assert "load_le32: kept C (source changed since it was tested)" in build()
     assert subprocess.run(["./app"], cwd=root, capture_output=True, text=True, check=True).stdout == out
+
+
+# sum_mixed in asm: a loop calling the static helper `mix`, saving the
+# registers it keeps across calls (three pushes also realign the stack).
+SUM_MIXED = """\tpush rbx
+\tpush r12
+\tpush r13
+\tmov r12, rdi
+\tmov r13d, esi
+\txor ebx, ebx
+\ttest r13d, r13d
+\tjle done
+loop:
+\tmov edi, dword ptr [r12]
+\tcall mix
+\tadd ebx, eax
+\tadd r12, 4
+\tdec r13d
+\tjnz loop
+done:
+\tmov eax, ebx
+\tpop r13
+\tpop r12
+\tpop rbx
+\tret
+"""
+
+
+@pytest.mark.parametrize("cc", ["clang", "gcc"])
+def test_functions_that_call_others_are_substituted_whole(oracle_proj, cc):
+    sc = project.scan(oracle_proj)
+    f = next(f for f in sc.functions if f.name == "sum_mixed")
+    assert f.oracle == "project", f.skipped
+    t = load_target(f.target)
+    root = oracle_proj.root
+    entry = lock.LockEntry(
+        function="sum_mixed", args=t.args, ret=t.ret, march="x86-64-v3", asm=SUM_MIXED,
+        status="tested", speedup=1.0, benchmark=t.name, run="test", candidate="test",
+        oracle="project", slice_sha=t.slice_sha,
+    )  # fmt: skip
+    files = ["main.c", "lib.c"]
+
+    def build(*flags: str) -> str:
+        env = {**os.environ, "OQED_CACHE": str(root / "cache"), "OQED_LOCK": str(root / "oqed.lock")}
+        cmd = [sys.executable, "-m", "oqed.cc", f"--cc={cc}", "-O3", "-march=x86-64-v3", *flags]
+        return subprocess.run(
+            cmd + ["-o", "app", *files], cwd=root, env=env, capture_output=True, text=True, check=True
+        ).stderr
+
+    run = lambda: subprocess.run(["./app"], cwd=root, capture_output=True, text=True, check=True).stdout  # noqa: E731
+    build()
+    want = run()
+    (root / "oqed.lock").write_text(lock.dumps([entry]))
+    for flags in ((), ("-masm=intel",)):
+        assert "sum_mixed: UNSAFE: substituted on testing only" in build(*flags)
+        assert run() == want
+        # The compiled program calls the asm, and the asm calls mix.
+        dis = subprocess.run(["objdump", "-d", "-M", "intel", "app"], cwd=root, capture_output=True, text=True)
+        body = dis.stdout.split("<sum_mixed>:")[1].split("\n\n")[0]
+        assert "call" in body and "<mix" in body

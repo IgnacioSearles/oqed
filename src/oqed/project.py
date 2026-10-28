@@ -325,10 +325,13 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
             spans.append((*unit.span(x), x))
     # Prototypes of the helpers go before the first function, so the order
     # functions are defined in does not matter.
+    # The function's own prototype too: helpers may call it back (recursion).
     protos = [
-        unit.text[unit.span(x)[0] : _offset(_body(x))].decode().strip() + ";"  # type: ignore[arg-type]
+        _STORAGE.sub("", unit.text[unit.span(x)[0] : _offset(_body(x))].decode()).strip() + ";"  # type: ignore[arg-type]
+        if x is d
+        else unit.text[unit.span(x)[0] : _offset(_body(x))].decode().strip() + ";"  # type: ignore[arg-type]
         for _, _, x in sorted(spans, key=lambda s: s[0])
-        if x.get("kind") == "FunctionDecl" and x is not d
+        if x.get("kind") == "FunctionDecl"
     ]
     out, last_end = [], -1
     for a, b, x in sorted(spans, key=lambda s: s[0]):
@@ -355,7 +358,8 @@ MINIMAL = 2
 
 def _check(target: Target) -> tuple[str | None, bool]:
     """Why oqed can't search this target, if it can't, and whether the
-    compiled code reads global data (so the harness can't run it alone)."""
+    compiled code needs the project to run: it reads global data or calls
+    other functions (so the harness can't run it alone)."""
     reads_globals = False
     sizes = []
     for compiler in ("clang", "gcc"):
@@ -365,13 +369,12 @@ def _check(target: Target) -> tuple[str | None, bool]:
             return f"{compiler}: {str(e).strip().splitlines()[-1][:120]}", False
         for line in asm.splitlines():
             ins = line.strip()
-            if ins.startswith("call"):
-                return f"calls {ins.split(None, 1)[-1]} ({compiler})", False
-            # `jmp name` leaves the function; `jmp .L5` and `jmp rcx` (a switch's jump table) don't.
-            op = ins.split(None, 1)[-1] if ins.startswith("jmp") else ""
+            # `call`, and `jmp name` (a tail call) leave the function;
+            # `jmp .L5` and `jmp rcx` (a switch's jump table) don't.
+            op = ins.split(None, 1)[-1] if ins.startswith(("jmp", "call")) else ""
             if re.fullmatch(r"[A-Za-z_][\w.@]*", op) and not op.startswith(".L") and op not in _GPRS:
-                return f"tail-calls {op} ({compiler})", False
-            reads_globals |= "rip" in ins
+                reads_globals = True
+            reads_globals |= "rip" in ins or ins.startswith("call")
         sizes.append(len([ln for ln in instruction_lines(asm) if ln != "ret"]))
     if max(sizes) <= MINIMAL:
         return f"already minimal ({max(sizes)} instructions)", reads_globals
@@ -449,7 +452,7 @@ def discover(project: Project, rec: Path) -> Scan:
                 meta["oracle"] = "project"
                 (tdir / "meta.toml").write_text(_toml(meta))
             else:
-                why = "needs `test` and `bench` in oqed.toml (takes pointers or reads global data)"
+                why = "needs `test` and `bench` in oqed.toml (takes pointers, reads global data or calls)"
         if why:
             f.skipped = why
             shutil.rmtree(tdir)

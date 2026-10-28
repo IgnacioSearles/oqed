@@ -144,12 +144,17 @@ LATENCY_NOTE = {
 
 PROJECT_NOTE = (
     "This function is part of a real project (the C above is sliced from it: the function, then "
-    "the declarations it uses). Your code becomes an inline asm block in every caller, with the "
-    "arguments in their usual registers (pointers as 64-bit values) and the result in rax. It may "
-    "read and write memory through its pointer arguments, and read globals by symbol name, exactly "
-    "as the C does. It must not touch the stack (no push, pop or call, nothing relative to rsp: "
-    "callers may keep data in the red zone) and must not use compiler-generated labels such as "
-    ".LJTI0_0 or .LCPI0_0 from the listings above: they exist only in the compiler's output. "
+    "the declarations it uses). Write one of two kinds of code. (1) A leaf block with no stack "
+    "use (no push, pop or call, nothing relative to rsp): it becomes an inline asm block in every "
+    "caller, so it saves the call; best for small functions. (2) A complete System V function: "
+    "it replaces the function's symbol and callers call it. It may use the stack, call other "
+    "functions of the project by name (static helpers included) or tail-call them, and must keep "
+    "the ABI: preserve rbx, rbp, r12-r15, keep rsp 16-byte aligned at each call, expect "
+    "caller-saved registers to be clobbered by calls. Either way the arguments arrive in their "
+    "usual registers (pointers as 64-bit values) and the result goes in rax; the code may read and "
+    "write memory through its pointer arguments and read globals by symbol name, exactly as the C "
+    "does. Don't use compiler-generated labels such as .LJTI0_0 or .LCPI0_0 from the listings "
+    "above: they exist only in the compiler's output. "
     "It is judged by building the project with it and running the project's tests, whose output "
     "must match the C build exactly, then by the project's benchmark: {bench} ({unit}, lower is "
     "better; the C build measures {base:.2f})."
@@ -645,11 +650,7 @@ class FunctionSearch:
         """Judge a candidate with the project oracle: substitute it, build, test, time."""
         t, cfg, o = self.target, self.config, self.oracle
         assert o is not None
-        try:
-            inline.written_registers(code, memory=True)
-        except inline.NotInlinable as e:
-            reject("inline", f"not inlinable: {e}", asm, expl)
-            return
+        # Inline asm or a whole function of its own: oqed-cc decides when it substitutes.
         entry = lock.LockEntry(
             function=t.function,
             args=t.args,

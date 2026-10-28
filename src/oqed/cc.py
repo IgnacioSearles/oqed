@@ -50,7 +50,7 @@ from pathlib import Path
 from . import inline, lock
 from .isa import MARCH_FEATURES, isa_violations
 from .targets import IntType, Target
-from .toolchain import ToolError, assemble, extract_function
+from .toolchain import ToolError, assemble, extract_function, relocations
 
 # Spellings clang's AST uses for (desugared) integer types.
 _INT_TYPES: dict[str, IntType] = {
@@ -122,6 +122,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
 class Definition:
     name: str
     body: tuple[int, int]  # byte offsets of `{ ... }` in the preprocessed file
+    start: int  # byte offset where the definition begins
     params: list[str]
     param_types: list[str]  # as spelled in the source
     args: list[IntType]
@@ -179,6 +180,7 @@ def find_definition(path: Path, name: str) -> Definition | str:
         return Definition(
             name,
             (body["range"]["begin"]["offset"], end["offset"] + end.get("tokLen", 1)),
+            d["range"]["begin"]["offset"],
             [p["name"] for p in parms],
             spellings,
             args,  # type: ignore[arg-type]
@@ -189,23 +191,66 @@ def find_definition(path: Path, name: str) -> Definition | str:
 
 
 @dataclass
+class Build:
+    """What a substitution needs to know about the compile it goes into."""
+
+    path: Path  # the preprocessed source
+    gcc: bool = False
+    intel: bool = False  # -masm=intel
+
+
+def _declared(path: Path, name: str) -> bool:
+    return any(
+        d.get("kind") in ("FunctionDecl", "VarDecl") and d.get("name") == name for d in _ast(path, name)
+    )
+
+
+@dataclass
 class Substitution:
+    """A lock entry applied to a definition. Usually the body becomes inline
+    asm, so callers keep inlining the function. Entries judged by the
+    project's tests may instead need to be a function of their own (they use
+    the stack, call other functions or tail-call): the definition is marked
+    `naked` and its body is the candidate, a whole System V function."""
+
     entry: lock.LockEntry
     definition: Definition
+    build: Build | None = None
     body: str = ""  # replacement C body
+    attrs: str = ""  # inserted before the definition
+    function: bool = False
 
     def __post_init__(self) -> None:
-        d = self.definition
+        d, asm = self.definition, self.entry.asm
         memory = self.entry.oracle == "project"
-        self.body = inline.asm_body(self.entry.asm, d.args, d.params, ret_cast=d.ret_spelling, memory=memory)
+        if not (memory and inline.needs_function(asm)):
+            self.body = inline.asm_body(asm, d.args, d.params, ret_cast=d.ret_spelling, memory=memory)
+            return
+        b = self.build or Build(Path("."))
+        self.function = True
+        # noipa: gcc must not assume what the asm clobbers or that it is pure
+        # (clang has no such analyses by default, and no such attribute).
+        self.attrs = "__attribute__((naked, noipa)) " if b.gcc else "__attribute__((naked)) "
+        # Taking the addresses keeps static callees the asm calls (the
+        # compiler can't see those calls and might drop or inline them all),
+        # and keeps the function's own calling convention standard.
+        syms = sorted({sym for _, sym in relocations(asm) if sym and sym != d.name})
+        keep = [d.name] + [sym for sym in syms if _declared(b.path, sym)]
+        refs = ", ".join(f"(void *)&{sym}" for sym in keep)
+        self.body = (
+            inline.naked_body(asm, d.name, b.intel)
+            + f" static void *const __oqed_keep_{d.name}[] __attribute__((used)) = {{{refs}}};"
+        )
 
 
 def rewrite(text: bytes, subs: list[Substitution]) -> bytes:
-    for s in sorted(subs, key=lambda s: s.definition.body[0], reverse=True):
+    for s in sorted(subs, key=lambda s: s.definition.start, reverse=True):
         a, b = s.definition.body
         # Keep the line count so line markers, diagnostics and the
         # vectorization guard's loop locations after the function don't move.
         text = text[:a] + s.body.encode() + b"\n" * text[a:b].count(b"\n") + text[b:]
+        start = s.definition.start
+        text = text[:start] + s.attrs.encode() + text[start:]
     return text
 
 
@@ -238,6 +283,10 @@ def _compile_s(cc: str, flags: list[str], remark_flags: list[str], path: Path) -
 
 def _is_clang(cc: str) -> bool:
     return "clang" in _run([cc, "--version"]).stdout
+
+
+def _build(cc: str, cmd: Command, ipath: Path) -> Build:
+    return Build(ipath, gcc=not _is_clang(cc), intel="-masm=intel" in cmd.flags)
 
 
 def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> tuple[str, str]:
@@ -332,8 +381,9 @@ def process_source(cc: str, cmd: Command, src: str, entries: list[lock.LockEntry
             f.writelines(f"{fn}\n" for fn in decision["kept"])
     if not decision["kept"]:
         return None
+    build = _build(cc, cmd, ipath)
     subs = [
-        Substitution(e, find_definition(ipath, e.function))  # type: ignore[arg-type]
+        Substitution(e, find_definition(ipath, e.function), build)  # type: ignore[arg-type]
         for e in wanted
         if e.function in decision["kept"]
     ]
@@ -349,6 +399,7 @@ def _decide(
     """Which lock entries to substitute in this source: {"kept": [function], "notes": [message]}."""
     notes: list[str] = []
     subs: list[Substitution] = []
+    build = _build(cc, cmd, ipath)
     for e in wanted:
         if e.march not in MARCH_FEATURES or cmd.march not in MARCH_FEATURES:
             notes.append(f"{src}: {e.function}: kept C (unknown -march {cmd.march!r})")
@@ -365,7 +416,7 @@ def _decide(
             notes.append(f"{src}: {e.function}: kept C (signature changed since the lock entry)")
             continue
         try:
-            subs.append(Substitution(e, d))
+            subs.append(Substitution(e, d, build))
         except inline.NotInlinable as ex:
             notes.append(f"{src}: {e.function}: kept C (not inlinable: {ex})")
     if not subs:

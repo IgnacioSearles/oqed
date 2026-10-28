@@ -40,7 +40,15 @@ from pydantic import BaseModel
 from . import harness, verify
 from .events import Cycles
 from .targets import ARG_REGS, IntType, Target, bit_width, is_signed
-from .toolchain import CFLAGS, Compiler, ToolError, assemble, compile_to_asm, extract_function
+from .toolchain import (
+    CFLAGS,
+    Compiler,
+    ToolError,
+    assemble,
+    compile_to_asm,
+    extract_function,
+    relocations,
+)
 
 CONSTRAINT = {"rdi": "D", "rsi": "S", "rdx": "d", "rcx": "c"}
 _OTHER: dict[Compiler, Compiler] = {"clang": "gcc", "gcc": "clang"}
@@ -92,20 +100,59 @@ def written_registers(code: bytes, memory: bool = False) -> set[str]:
     return out
 
 
+def needs_function(body: str) -> bool:
+    """Whether `body` can only run as a function of its own (called, not
+    inlined): it uses the stack (push, call, locals) or jumps to another
+    symbol (a tail call)."""
+    try:
+        written_registers(assemble(body, relocations=True), memory=True)
+    except NotInlinable:
+        return True
+    refs = {off for off, _ in relocations(body)}
+    for insn in iced.Decoder(64, assemble(body, relocations=True)):
+        if insn.flow_control != iced.FlowControl.NEXT and any(insn.ip <= off < insn.next_ip for off in refs):
+            return True
+    return False
+
+
+def _lines(body: str) -> list[str]:
+    lines = [ln.split("#")[0].split("//")[0].rstrip() for ln in body.splitlines()]
+    return [ln.strip() for ln in lines if ln.strip()]
+
+
+def _rename_labels(lines: list[str], new) -> list[str]:
+    # Numeric local labels (`1:` with `jz 1f`) may repeat, so they work as
+    # they are; only named labels need renaming.
+    labels = {m.group(1) for ln in lines if (m := _LABEL_DEF.match(ln)) and not m.group(1).isdigit()}
+    if not labels:
+        return lines
+    alts = "|".join(re.escape(lb) for lb in sorted(labels, key=len, reverse=True))
+    pat = re.compile(rf"(?<![\w.$])({alts})(?![\w$])")
+    return [pat.sub(lambda m: new(m.group(1)), ln) for ln in lines]
+
+
+def naked_body(body: str, name: str, intel_build: bool = False) -> str:
+    """A C function body, on one line, for a function declared `naked`: the
+    candidate is the whole function (System V ABI, ends in `ret`), so it may
+    use the stack and call other functions. Labels get a per-function prefix
+    so they can't collide with the compiler's. The assembler goes back to the
+    build's syntax afterwards (AT&T unless `-masm=intel`)."""
+    lines = _lines(body)
+    if any(c in ln for ln in lines for c in '"\\'):
+        raise NotInlinable("contains quotes or backslashes")
+    lines = _rename_labels(lines, lambda lb: f".Loqed_{name}_{lb.lstrip('.')}")
+    restore = ".intel_syntax noprefix" if intel_build else ".att_syntax prefix"
+    text = "".join(f"\t{ln}\\n" for ln in lines)
+    return f'{{ __asm__(".intel_syntax noprefix\\n{text}{restore}\\n"); }}'
+
+
 def _template(body: str) -> str:
     """The body as an asm template: comments dropped, labels made unique per
     asm instance with `%=`, every `ret` turned into a jump to the end."""
-    lines = [ln.split("#")[0].split("//")[0].rstrip() for ln in body.splitlines()]
-    lines = [ln.strip() for ln in lines if ln.strip()]
+    lines = _lines(body)
     if any(c in ln for ln in lines for c in "{|}%"):
         raise NotInlinable("contains characters that are special in asm templates ({ | } %)")
-    # Numeric local labels (`1:` with `jz 1f`) may repeat, so they work in
-    # inline asm as they are; only named labels need renaming.
-    labels = {m.group(1) for ln in lines if (m := _LABEL_DEF.match(ln)) and not m.group(1).isdigit()}
-    if labels:
-        alts = "|".join(re.escape(lb) for lb in sorted(labels, key=len, reverse=True))
-        pat = re.compile(rf"(?<![\w.$])({alts})(?![\w$])")
-        lines = [pat.sub(lambda m: f"{m.group(1)}_%=", ln) for ln in lines]
+    lines = _rename_labels(lines, lambda lb: f"{lb}_%=")
     while lines and lines[-1] == "ret":
         lines.pop()
     end_used = any(ln == "ret" for ln in lines)

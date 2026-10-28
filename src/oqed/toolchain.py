@@ -99,6 +99,22 @@ def assemble(body: str, name: str = "f", relocations: bool = False) -> bytes:
         return _symbol_bytes(obj, name, relocations)
 
 
+def relocations(body: str, name: str = "f") -> list[tuple[int, str]]:
+    """(offset in the function, symbol) for each reference the assembled body
+    makes to another symbol (calls, tail calls, data)."""
+    with tempfile.TemporaryDirectory() as d:
+        src, obj = Path(d) / "f.s", Path(d) / "f.o"
+        src.write_text(wrap_function(body, name))
+        _run(["as", "--64", "-o", str(obj), str(src)])
+        with obj.open("rb") as f:
+            elf = ELFFile(f)
+            rela = elf.get_section_by_name(".rela.text")
+            if rela is None:
+                return []
+            symtab = elf.get_section(rela["sh_link"])
+            return [(r["r_offset"], symtab.get_symbol(r["r_info_sym"]).name) for r in rela.iter_relocations()]
+
+
 def _symbol_bytes(obj: Path, name: str, relocations: bool = False) -> bytes:
     with obj.open("rb") as f:
         elf = ELFFile(f)
