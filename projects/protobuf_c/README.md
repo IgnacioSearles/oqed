@@ -28,23 +28,37 @@ through `unpack`, and prints an FNV-1a hash of the packed bytes.
 
 ## Result (laptop, Zen 3 under WSL2, best of 200, three runs each)
 
-`oqed.lock` comes from run `20261028-021819-67bd` (24 contributor-Spark candidates
-per function, $0.08):
+`oqed.lock` comes from `oqed optimize --unsafe --top 6 --max-usd 0.40` in this
+directory (run `20261028-025628-cf64`, $0.32, contributor Spark). Nobody picked
+the functions: `oqed scan` found 96 functions, 10 in scope, and the search took
+the 6 the workload calls, most-called first.
 
-| function | oqed asm | inlined latency vs -O3 |
-|---|---|---|
-| `uint64_size` | `lzcnt rax, rdi; lea edx, [rax+rax*8]; shl edx, 2; mov eax, 2560; sub eax, edx; shr eax, 8` | 2.75× |
-| `uint32_size` | `lzcnt eax, edi; lea ecx, [rax+rax*8]; mov eax, 352; sub eax, ecx; shr eax, 6` | 1.45× |
+| function | calls in the workload | result | inlined latency vs -O3 (clang / gcc) |
+|---|---|---|---|
+| `get_tag_size` | 6.8M | proven | 1.42× / 2.81× |
+| `uint64_size` | 6.6M | proven | 3.57× / 3.48× |
+| `uint32_size` | 4.8M | proven | 1.48× / 2.94× |
+| `zigzag64` | 2.5M | no win (already 3 instructions) | |
+| `sint64_size` | 1.6M | proven | 2.01× / 1.97× |
+| `unzigzag64` | 4K | no win | |
+
+All four winners are `lzcnt` plus a multiply and shift in place of a branch
+chain. Every function in scope here is loop-free, so all four are proven and
+`--unsafe` added nothing.
 
 `make compare` (ns per point; packed bytes identical in every build):
 
 | compiler | get_packed_size plain | oqed-cc | | size + pack plain | oqed-cc | |
 |---|---|---|---|---|---|---|
-| clang | 32.4 | 20.6 | **1.57×** | 74.9 | 64.9 | **1.15×** |
-| gcc | 33.4 | 26.9 | **1.24×** | 79.3 | 73.0 | **1.09×** |
+| clang | 30.9 | 20.5 | **1.51×** | 72.7 | 63.2 | **1.15×** |
+| gcc | 33.9 | 20.5 | **1.65×** | 79.6 | 66.4 | **1.20×** |
 
-oqed-cc proves both substitutions against protobuf-c's own functions with each
-compiler. Neither one stops a loop from vectorizing. The gain comes from
-branch mispredictions on values of mixed magnitude: a batch where every value
-fits in one byte would see little change, since the branchy code predicts
-well there.
+oqed-cc proves all four substitutions against protobuf-c's own functions with
+each compiler, and none stops a loop from vectorizing. An earlier lock with only
+the two hand-picked functions (`uint64_size`, `uint32_size`) gave 1.57× / 1.24×
+on `get_packed_size`; adding `get_tag_size` and `sint64_size` mostly helps gcc.
+The gain comes from branch mispredictions on values of mixed magnitude: a batch
+where every value fits in one byte would see little change.
+
+The hottest functions oqed can't search yet take pointers (`field_is_zeroish`,
+`uint32_pack`, `required_field_pack`, ...): that is the next step.

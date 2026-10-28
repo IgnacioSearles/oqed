@@ -9,11 +9,15 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
 
-load_dotenv(".env")
+# The nearest .env up from the working directory (oqed runs inside projects),
+# then the one in the oqed checkout.
+load_dotenv(find_dotenv(usecwd=True))
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
 @dataclass(frozen=True)
