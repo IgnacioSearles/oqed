@@ -144,15 +144,25 @@ class _Member:
 
 @dataclass
 class Budget:
-    """Model spend across the whole run. Calls already in flight when the cap
-    is reached still finish, so a run can overshoot by up to `concurrency`
-    calls (cents for Spark, ~$0.25 for a Wonder call)."""
+    """Model spend across the whole run. A call starts only when its worst-case
+    cost (a reply using all of max_tokens) fits under the cap next to the
+    worst cases of the calls in flight, so the cap is never exceeded."""
 
     limit: float | None = None
     spent: float = 0.0
+    reserved: float = 0.0  # worst-case cost of the calls in flight
     unpriced: int = 0  # calls to models with no known price; the cap can't count them
 
-    def add(self, cost: float | None) -> None:
+    def reserve(self, worst: float | None) -> bool:
+        """Claim a call's worst-case cost; False when it might not fit."""
+        w = worst or 0.0
+        if self.limit is not None and self.spent + self.reserved + w > self.limit:
+            return False
+        self.reserved += w
+        return True
+
+    def add(self, cost: float | None, reserved: float | None = None) -> None:
+        self.reserved -= reserved or 0.0
         if cost is None:
             self.unpriced += 1
         else:
@@ -186,6 +196,7 @@ class FunctionSearch:
     proposed: int = 0
     reasoning_in_flight: bool = False
     reasoning_since_best: int = 0
+    reasoning_unaffordable: bool = False  # a reasoning-tier reply no longer fits under the cap
     done: bool = False
     budget: Budget = field(default_factory=Budget)
     spent: float = 0.0  # this function's share
@@ -304,36 +315,57 @@ class FunctionSearch:
                     f"and {self.stall} further candidates"
                 )
                 return
-            if self.stall >= cfg.stall_after and not self.reasoning_in_flight:
+            can_reason = not self.reasoning_in_flight and not self.reasoning_unaffordable
+            if self.stall >= cfg.stall_after and can_reason:
                 tier = "reasoning"
                 self.emit(SearchStalled, rounds_without_improvement=self.stall)
                 self.stall = 0
                 self.reasoning_in_flight = True
                 self.reasoning_since_best += 1
             self.proposed += 1
+            started = False
             try:
-                await self.one(self.proposed, tier)
+                started = await self.one(self.proposed, tier)
             finally:
                 if tier == "reasoning":
                     self.reasoning_in_flight = False
+            if not started:
+                self.proposed -= 1
+                if tier == "volume":
+                    spent = self.budget.spent
+                    self.stop(f"spending cap reached: ${spent:.2f} spent, the next call might not fit")
+                    return
+                # Count the attempt so a stalled search can still converge without it.
+                self.reasoning_unaffordable = True
+                self.reasoning_since_best = cfg.reasoning_attempts
 
     def stop(self, reason: str) -> None:
         if not self.done:
             self.done = True
             self.emit(SearchStopped, reason=reason, candidates=self.proposed)
 
-    async def one(self, n: int, tier: ModelTier) -> None:
+    async def one(self, n: int, tier: ModelTier) -> bool:
+        """Propose and evaluate one candidate; False when the call would not fit under the cap."""
         cfg = self.config
         model = self.reasoning if tier == "reasoning" else self.volume
         effort = cfg.reasoning_effort if tier == "reasoning" else cfg.volume_effort
         messages, parent = self._messages(tier == "reasoning", n)
+        worst = model.worst_cost(messages) if hasattr(model, "worst_cost") else None
+        if not self.budget.reserve(worst):
+            left = (self.budget.limit or 0) - self.budget.spent - self.budget.reserved
+            print(
+                f"[{self.target.name}] {model.model} not called: a reply could cost ${worst:.2f}, "
+                f"${max(left, 0):.2f} is left under the cap"
+            )
+            return False
         t_start = time.perf_counter()
         try:
             comp = await model.complete(messages, effort=effort)
         except ProviderError as e:
+            self.budget.add(0.0, reserved=worst)
             print(f"[{self.target.name}] model call failed: {e}")
-            return
-        self.budget.add(comp.cost_usd)
+            return True
+        self.budget.add(comp.cost_usd, reserved=worst)
         self.spent += comp.cost_usd or 0.0
         clock = _Clock()
         try:
@@ -347,6 +379,7 @@ class FunctionSearch:
                 verifier_ms=clock.verifier_ms,
                 orchestrator_ms=max(0.0, total - comp.model_ms - clock.harness_ms - clock.verifier_ms),
             )
+        return True
 
     async def _evaluate(self, cid: str, parent: str | None, tier: ModelTier, comp: Completion, clock: _Clock):
         cfg = self.config

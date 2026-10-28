@@ -135,10 +135,21 @@ def test_spending_cap_stops_the_run(tmp_path):
     kinds = Counter(e.type for e in events)
     stopped = next(e for e in events if e.type == "search_stopped")
     assert "spending cap" in stopped.reason
-    # In-flight calls finish, so the overshoot is bounded by the concurrency.
-    assert 5 <= kinds["candidate_proposed"] <= 5 + cfg.concurrency
-    assert 0.5 <= events[-1].cost_usd <= 0.5 + cfg.concurrency * 0.1 + 1e-9
+    # Calls reserve their worst case before starting, so the cap is never exceeded.
+    assert kinds["candidate_proposed"] == 5
+    assert abs(events[-1].cost_usd - 0.5) < 1e-9
     assert set(events[-1].summary) == {T.name}  # the second function never started
+
+
+def test_reasoning_tier_is_skipped_when_its_worst_case_does_not_fit(tmp_path, capsys):
+    volume = MockProvider([WRONG], seed=0, cost=0.01)
+    reasoning = MockProvider([GOOD], seed=0, model="mock-reasoning", cost=0.3, worst=0.7)
+    cfg = SearchConfig(candidates=20, concurrency=1, stall_after=3, max_usd=0.25)
+    run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    assert not any(e.type == "candidate_proposed" and e.model == "mock-reasoning" for e in events)
+    assert events[-1].cost_usd <= 0.25
+    assert "mock-reasoning not called" in capsys.readouterr().out
 
 
 def test_stack_using_candidate_is_rejected_as_not_inlinable(tmp_path):

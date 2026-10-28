@@ -1,0 +1,7 @@
+function = "uint32_size"
+category = "bits"
+args = ["u32"]
+ret = "u64"
+loop_free = true
+source = "protobuf-c v1.5.1 (protobuf-c/protobuf-c@185beed), varint length of uint32 fields, lengths and tags"
+license = "BSD-2-Clause"

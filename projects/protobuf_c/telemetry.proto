@@ -1,0 +1,18 @@
+// The schema telemetry.pb-c.{h,c} implement. protoc-c is not needed to build the
+// testbed: the descriptors are written by hand in the same form it generates.
+syntax = "proto3";
+
+package telemetry;
+
+message Point {
+  uint64 timestamp_us = 1;
+  uint64 series_id = 2;  // hash of the series name and labels
+  int64 value = 3;
+  sint64 delta = 4;      // change since the previous sample
+  uint32 flags = 5;
+}
+
+message Batch {
+  uint64 batch_id = 1;
+  repeated Point points = 2;
+}

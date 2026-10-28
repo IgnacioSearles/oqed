@@ -65,6 +65,18 @@ class ProviderError(RuntimeError):
     pass
 
 
+MAX_TOKENS = 32000  # per reply; reasoning at high effort can use all of it
+
+
+def worst_cost(spec: ModelSpec, messages: list[dict], max_tokens: int = MAX_TOKENS) -> float | None:
+    """The most a call can cost: the prompt (overestimated at 2 characters per
+    token) plus a reply that uses all of `max_tokens`. None when unpriced."""
+    if spec.price is None:
+        return None
+    tin = sum(len(str(m.get("content", ""))) for m in messages) / 2
+    return (tin * spec.price[0] + max_tokens * spec.price[1]) / 1e6
+
+
 class Provider:
     def __init__(self, spec: ModelSpec):
         key = os.environ.get(spec.key_env)
@@ -77,7 +89,7 @@ class Provider:
         self._sem = asyncio.Semaphore(spec.max_concurrency)
 
     async def complete(
-        self, messages: list[dict], effort: str | None = None, max_tokens: int = 32000
+        self, messages: list[dict], effort: str | None = None, max_tokens: int = MAX_TOKENS
     ) -> Completion:
         kwargs: dict = {"model": self.spec.model, "messages": messages, "max_tokens": max_tokens}
         if effort and self.spec.reasoning_effort:
@@ -112,6 +124,9 @@ class Provider:
                 await asyncio.sleep(min(30.0, 2**attempt) * (0.5 + random.random()))
             raise ProviderError(f"{self.spec.name}: giving up after retries: {err}")
 
+    def worst_cost(self, messages: list[dict]) -> float | None:
+        return worst_cost(self.spec, messages)
+
 
 @dataclass
 class MockProvider:
@@ -122,6 +137,7 @@ class MockProvider:
     seed: int = 0
     delay: float = 0.0
     cost: float = 0.0  # USD per call, for testing the spending cap
+    worst: float | None = None  # worst-case cost per call; `cost` when None
     _rng: random.Random = field(init=False)
 
     def __post_init__(self) -> None:
@@ -138,6 +154,9 @@ class MockProvider:
             model_ms=self.delay * 1000,
             cost_usd=self.cost,
         )
+
+    def worst_cost(self, messages: list[dict]) -> float:
+        return self.cost if self.worst is None else self.worst
 
 
 def get_provider(name: str) -> Provider:

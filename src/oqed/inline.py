@@ -56,6 +56,10 @@ _LABEL_DEF = re.compile(r"^\s*([.\w$]+):\s*$")
 VARIANTS = ("dep_ref", "dep_cand", "indep_ref", "indep_cand", "scalar_ref")
 CHECK_INPUTS = 8000
 SAMPLES = 101
+# Enough inputs that the branch predictor cannot learn the replayed sequence.
+# With 1024 (replayed 8 times per sample, 101 samples) it did: a branchy
+# reference whose branches miss on real data timed at ~3 ticks instead of ~12.
+BENCH_INPUTS = 65536
 
 
 class NotInlinable(ValueError):
@@ -183,7 +187,7 @@ def bench_program(body: str, target: Target) -> str:
     same reason."""
     idx = range(len(target.args))
     check = harness.make_inputs(target)[:CHECK_INPUTS]
-    bench = [_typed(r, target) for r in harness.bench_inputs(target)]
+    bench = [_typed(r, target) for r in harness.bench_inputs(target, n=BENCH_INPUTS)]
     ret_t, a0 = _C_TYPES[target.ret], _C_TYPES[target.args[0]]
 
     def call(f: str, arr: str, first: str | None = None) -> str:
@@ -240,7 +244,7 @@ __attribute__((noinline)) static void scalar_ref(int passes) {{
 #define SAMPLES {SAMPLES}
 {ret_t} out[N];
 static volatile {ret_t} sink;
-static volatile int passes = 8;
+static volatile int passes = 1;
 {loops}
 static uint64_t ticks(void) {{
     BARRIER;

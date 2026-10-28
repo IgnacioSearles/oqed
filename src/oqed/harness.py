@@ -156,13 +156,14 @@ def bench_cpu() -> int | None:
 BENCH_INPUTS = 1024
 
 
-def bench_inputs(target: Target, seed: int = 1) -> list[list[int]]:
+def bench_inputs(target: Target, seed: int = 1, n: int = BENCH_INPUTS) -> list[list[int]]:
     """Fixed inputs for timing, the same for every candidate: half uniform over
     each argument's type, half small magnitudes (|v| < 1024), shuffled so
-    branchy code sees unpredictable branches."""
+    branchy code sees unpredictable branches. Replayed often enough, a short
+    sequence is learned by the branch predictor; see inline.BENCH_INPUTS."""
     rng = random.Random(seed)
     out = []
-    for i in range(BENCH_INPUTS):
+    for i in range(n):
         args = []
         for t in target.args:
             if i % 2:
