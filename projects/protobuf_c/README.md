@@ -63,7 +63,7 @@ where every value fits in one byte would see little change.
 ## Functions that write memory (`--unsafe`, project oracle)
 
 `oqed optimize --unsafe field_is_zeroish uint32_pack tag_pack uint64_pack
-sint64_pack` (run `20261028-*`, $0.29) searched the hottest functions that take
+sint64_pack` (run `20261028-135748-51da`, $0.29) searched the hottest functions that take
 pointers. These can't be run alone on random inputs, so each candidate was
 built into a copy of this project and judged by `pbc_profile --check` (packed
 bytes, hash and round trip must match the C build exactly) and timed with
