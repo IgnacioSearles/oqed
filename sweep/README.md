@@ -9,6 +9,7 @@ oqed-cc build, same test result and output files, 11 alternating runs.
 | library | commit | init | hottest function (share of the workload) | searched | spend | whole program |
 |---|---|---|---|---|---|---|
 | zlib | 71747d1 | 3 attempts, $0.003 | `longest_match` (88%) | top 3 | $0.35 | **1.026x**, faster in 11 of 11 runs, outputs identical (1 tested entry) |
+| cJSON | 6d9f244 | 2 attempts, $0.004 | `parse_string` (3%); the library's own code is ~25% of the workload, the rest is libc (`sprintf`/`strtod` for doubles) | top 6 | $0.85 | **1.072x**, faster in 11 of 11 runs, output hash identical (3 tested entries) |
 | lz4 | 5e08bd2 | 1 attempt, $0.001 | `LZ4HC_compress_generic_internal` (62%) | none | - | out of reach: the hot code is force-inlined into functions of 4,000-8,600 instructions; what oqed can take is under 5% each |
 
 What the sweep caught along the way:
@@ -21,3 +22,15 @@ What the sweep caught along the way:
 - lz4, first run: a 1.04x win that measured 0.977x in the report. It was
   noise: a 90 ms workload, timed while other candidates built. Benchmarks now
   run alone, and a candidate must win 6 of 7 paired runs.
+- cJSON: most of the 1.072x is `parse_value` (1.064x alone, though it is 1.9%
+  of the samples). clang inlines `parse_array` and `parse_number` into an
+  890-byte `parse_value` that every level of the recursive descent goes
+  through; the model's version is a 254-byte first-byte dispatcher that
+  tail-calls them, so they become functions of their own. A real gain with
+  identical output, and part of it comes from the outlining; marking those
+  helpers noinline in C might get some of it too. `ensure` gives 1.008x and
+  `buffer_skip_whitespace` 1.016x.
+- cJSON was the first run with assembler errors fed back line by line and a
+  repair turn: 6 of 67 rejections were assembler errors (9%), against 47 of 74
+  (64%) in the lz4 and zlib runs. The ABI check is now the most common
+  rejection (14, reading caller-saved registers after calls).

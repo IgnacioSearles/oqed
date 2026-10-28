@@ -13,7 +13,10 @@ meaning is not in doubt:
 - the count/index operand of bzhi, shlx, shrx, sarx and bextr only has its low
   bits read, so it takes the destination's width;
 - a store with an explicit size (`mov word ptr [rdx], eax`) keeps the low bits
-  of the source, so the source register takes the store's width.
+  of the source, so the source register takes the store's width;
+- a whole-register vector move (vmovdqu, vmovdqa, vmovups, vmovaps, vlddqu)
+  moves the register's width whatever size the memory operand names;
+- a label defined as `8f:` (the reference form) means `8:`.
 
 Everything else (`add r64, r32`: zero- or sign-extend?) is left to the model.
 """
@@ -43,6 +46,7 @@ _WIDTH = {0: 64, 1: 32, 2: 16, 3: 8}
 _PTR = {"byte": 8, "word": 16, "dword": 32, "qword": 64}
 _SHIFTS = {"shl", "shr", "sar", "sal", "rol", "ror", "rcl", "rcr"}
 _COUNT_LAST = {"bzhi", "shlx", "shrx", "sarx", "bextr"}
+_VMOVES = {"vmovdqu", "vmovdqa", "vmovups", "vmovaps", "vlddqu"}
 
 
 def _width(reg: str) -> int | None:
@@ -127,6 +131,8 @@ def hint_for(message: str, text: str) -> str:
 
 def _fix_line(text: str) -> str | None:
     """A rewritten instruction, when the error has one reading only."""
+    if lb := re.fullmatch(r"(\d+)[fb]:", text.strip()):
+        return f"{lb.group(1)}:"
     m = re.fullmatch(r"(\w+)\s+(.*)", text.strip())
     if not m:
         return None
@@ -137,6 +143,15 @@ def _fix_line(text: str) -> str | None:
     if op in _COUNT_LAST and len(operands) == 3 and _width(regs[0]) and _width(regs[2]):
         if _width(regs[0]) != _width(regs[2]) and _width(regs[0]) in (32, 64):
             return f"{op} {operands[0]}, {operands[1]}, {_resize(regs[2], _width(regs[0]))}"  # type: ignore[arg-type]
+    if op in _VMOVES and len(operands) == 2:
+        vec = next((r for r in regs if re.fullmatch(r"[xy]mm\d+", r)), None)
+        mem = next((i for i, r in enumerate(regs) if "ptr" in r), None)
+        if vec and mem is not None:
+            size = "ymmword" if vec.startswith("y") else "xmmword"
+            new = re.sub(r"^\w+\s+ptr", f"{size} ptr", operands[mem], flags=re.I)
+            out = list(operands)
+            out[mem] = new
+            return f"{op} {', '.join(out)}" if new != operands[mem] else None
     if op == "mov" and len(operands) == 2 and _width(regs[1]):
         p = re.match(r"(byte|word|dword|qword)\s+ptr\b", regs[0])
         if p and _PTR[p.group(1)] < _width(regs[1]):  # type: ignore[operator]
@@ -152,6 +167,6 @@ def fix(body: str) -> tuple[str, list[str]]:
         new = _fix_line(e.text)
         if new is None or not 1 <= e.line <= len(lines):
             continue
-        lines[e.line - 1] = "\t" + new
+        lines[e.line - 1] = new if new.endswith(":") else "\t" + new
         notes.append(f"`{e.text}` -> `{new}`")
     return "\n".join(lines) + "\n", notes

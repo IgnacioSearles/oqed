@@ -40,3 +40,15 @@ def test_gcc_addresses_take_the_usual_form():
         "\tcall QWORD PTR [r10+32]",
         "\tmov eax, [rdi]",
     ]
+
+
+def test_vector_move_sizes_and_reference_style_labels():
+    body = "\tvmovdqu ymm0, BYTE PTR [rdi]\n\tvmovdqa xmmword ptr [rsi], xmm1\n8f:\n\tret\n"
+    fixed, notes = fixup.fix(body)
+    assert fixed.splitlines() == [
+        "\tvmovdqu ymm0, ymmword ptr [rdi]",
+        "\tvmovdqa xmmword ptr [rsi], xmm1",
+        "8:",
+        "\tret",
+    ]
+    assert len(notes) == 2

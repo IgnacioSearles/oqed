@@ -1,0 +1,33 @@
+build = '''python3 -c "import json; data=[{chr(105)+chr(100):i,chr(110)+chr(97)+chr(109)+chr(101):chr(105)+chr(116)+chr(101)+chr(109)+str(i)+chr(32)+chr(65)+chr(66)+chr(67)+chr(68)+chr(69)+chr(70)+chr(71)+chr(72),chr(118)+chr(97)+chr(108)+chr(117)+chr(101):i*1.2345,chr(102)+chr(108)+chr(97)+chr(103):(i%2==0),chr(116)+chr(97)+chr(103)+chr(115):[chr(97),chr(98),chr(99),str(i)]} for i in range(5000)]; open(chr(111)+chr(113)+chr(101)+chr(100)+chr(95)+chr(98)+chr(105)+chr(103)+chr(46)+chr(106)+chr(115)+chr(111)+chr(110),chr(119)).write(json.dumps(data))" && cat > oqed_driver.c <<EOF
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "cJSON.h"
+int main(void) {
+    FILE *f = fopen("oqed_big.json", "rb");
+    long len; char *buf; char *out;
+    unsigned long long h = 1469598103934665603ULL;
+    int iter; int k;
+    if (!f) { fprintf(stderr, "no input\n"); return 1; }
+    fseek(f, 0, SEEK_END); len = ftell(f); fseek(f, 0, SEEK_SET);
+    buf = (char*)malloc((size_t)len + 1);
+    if (!buf) return 1;
+    if (fread(buf, 1, (size_t)len, f) != (size_t)len) return 1;
+    fclose(f); buf[len] = 0;
+    for (iter = 0; iter < 300; iter++) {
+        cJSON *j = cJSON_Parse(buf);
+        if (!j) { fprintf(stderr, "parse failed\\n"); return 1; }
+        out = cJSON_PrintUnformatted(j);
+        if (!out) { fprintf(stderr, "print failed\\n"); return 1; }
+        for (k = 0; out[k] != 0; k++) { h ^= (unsigned long long)(unsigned char)out[k]; h *= 1099511628211ULL; }
+        cJSON_Delete(j);
+        free(out);
+    }
+    free(buf);
+    printf("%016llx\\n", h);
+    return 0;
+}
+EOF
+$CC -O3 -march=x86-64-v3 -o oqed_bench cJSON.c cJSON_Utils.c oqed_driver.c -lm'''
+run = '''./oqed_bench'''
+test = '''./oqed_bench'''

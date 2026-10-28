@@ -1,0 +1,58 @@
+{
+  "project": "cJSON",
+  "compiler": "clang",
+  "unit": "CPU ms",
+  "bench": "./oqed_bench",
+  "entries": 3,
+  "proven": 0,
+  "tested": 3,
+  "applied": 3,
+  "notes": [
+    "cJSON.c: buffer_skip_whitespace: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)",
+    "cJSON.c: ensure: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)",
+    "cJSON.c: parse_value: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)"
+  ],
+  "test": "./oqed_bench",
+  "test_output_identical": true,
+  "output_files": 0,
+  "output_files_identical": true,
+  "plain": {
+    "median": 3216.141,
+    "q1": 3132.831,
+    "q3": 3321.516,
+    "runs": [
+      3306.559,
+      3216.141,
+      3059.583,
+      3119.679,
+      3366.41,
+      3321.516,
+      3303.287,
+      3443.809,
+      3143.735,
+      3132.831,
+      3195.628
+    ]
+  },
+  "oqed": {
+    "median": 3001.381,
+    "q1": 2943.725,
+    "q3": 3082.175,
+    "runs": [
+      2943.725,
+      2994.249,
+      2830.735,
+      2956.684,
+      3247.089,
+      3054.414,
+      3022.488,
+      2942.788,
+      3001.381,
+      3082.175,
+      3105.297
+    ]
+  },
+  "speedup": 1.072,
+  "valid": true,
+  "faster_runs": 11
+}
