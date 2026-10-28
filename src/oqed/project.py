@@ -452,6 +452,9 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
 
 # Functions both compilers reduce to this many instructions (plus `ret`) aren't worth a search.
 MINIMAL = 2
+# Past this many instructions (from both compilers) a function is too big to
+# rewrite whole, and its listings alone would fill the prompt.
+MAXIMUM = 1500
 
 
 def _check(target: Target) -> tuple[str | None, bool]:
@@ -478,6 +481,8 @@ def _check(target: Target) -> tuple[str | None, bool]:
         sizes.append(len([ln for ln in instruction_lines(asm) if ln != "ret"]))
     if max(sizes) <= MINIMAL:
         return f"already minimal ({max(sizes)} instructions)", reads_globals
+    if min(sizes) > MAXIMUM:
+        return f"too big to rewrite ({min(sizes)} instructions)", reads_globals
     return None, reads_globals
 
 
