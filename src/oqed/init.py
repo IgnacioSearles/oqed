@@ -40,6 +40,7 @@ _BUILD_FILES = [
 ]  # fmt: skip
 _SKIP_DIRS = {".git", ".oqed", "node_modules", "build", "dist", ".github", "doc", "docs"}
 MAX_FILES = 300
+SUPPORT = proj.SUPPORT
 RUN_CPU_MS = (500, 5_000)
 
 SYSTEM = """You configure oqed, a tool that speeds up C projects by replacing hot \
@@ -83,7 +84,14 @@ it to let oqed time `run` itself (usually best). If given, set bench_unit, and s
 bench_higher_is_better = true (a TOML boolean) for throughputs like MB/s.
 - cc (optional): "clang" (default) or "gcc".
 
-Reply with the file only, inside <toml></toml> tags, then nothing else."""
+Driver programs and input generators go in files of their own, never inlined in a command \
+(quoting C or Python inside a TOML string inside a shell command breaks): give each as \
+<file path="oqed_support/NAME">contents</file>, in the directory oqed_support/, and refer to \
+it from the commands by that relative path (e.g. `python3 oqed_support/gen.py > input.yaml`, \
+`$CC -O3 -march=x86-64-v3 -Iinclude -o bench oqed_support/driver.c libfoo.a`).
+
+Reply with any files, then oqed.toml inside <toml></toml> tags, then nothing else. Every reply \
+gives the complete set: files from earlier replies that aren't repeated are deleted."""
 
 
 def repo_context(root: Path) -> str:
@@ -113,8 +121,29 @@ def repo_context(root: Path) -> str:
 
 
 def parse_reply(text: str) -> str:
+    text = re.sub(r"<file\b.*?</file>", "", text, flags=re.S)
     m = re.search(r"<toml>(.*?)</toml>", text, re.S) or re.search(r"```(?:toml)?\n(.*?)```", text, re.S)
     return (m.group(1) if m else text).strip() + "\n"
+
+
+def parse_files(text: str) -> dict[str, str]:
+    """Support files in a reply, by path under oqed_support/."""
+    out = {}
+    for m in re.finditer(r'<file\s+path="([^"]+)"\s*>\n?(.*?)</file>', text, re.S):
+        path = Path(m.group(1))
+        if path.is_absolute() or ".." in path.parts:
+            continue
+        if path.parts[0] != SUPPORT:
+            path = Path(SUPPORT, *path.parts)
+        out[str(path)] = m.group(2)
+    return out
+
+
+def write_files(root: Path, files: dict[str, str]) -> None:
+    shutil.rmtree(root / SUPPORT, ignore_errors=True)
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
 
 
 def _fresh_copy(root: Path, dest: Path) -> None:
@@ -124,6 +153,8 @@ def _fresh_copy(root: Path, dest: Path) -> None:
     if archive.returncode == 0:
         dest.mkdir(parents=True)
         subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+        if (root / SUPPORT).is_dir():
+            shutil.copytree(root / SUPPORT, dest / SUPPORT, dirs_exist_ok=True)
     else:
         shutil.copytree(root, dest, ignore=shutil.ignore_patterns(".oqed", ".git"))
 
@@ -217,21 +248,31 @@ async def init(root: Path, model, attempts: int = 4, hint: str = "", log=print) 
         log(f"[init] asking {model.model} for oqed.toml (attempt {attempt}/{attempts})")
         reply = await model.complete(messages, effort="low", max_tokens=4000)
         spent += reply.cost_usd or 0.0
-        toml = parse_reply(reply.text)
+        toml, files = parse_reply(reply.text), parse_files(reply.text)
+        write_files(root, files)
+        for rel, text in files.items():
+            log(f"  {rel}: {len(text.splitlines())} lines")
         log("\n".join("  | " + ln for ln in toml.splitlines()))
         problem = await asyncio.to_thread(check, root, toml, log)
         if problem is None:
             log(f"[init] wrote {root / proj.CONFIG}")
             return spent
-        log(f"[init] doesn't work yet: {problem.splitlines()[0][:200]}")
+        lines = [ln for ln in problem.splitlines() if ln.strip()]
+        log(
+            f"[init] doesn't work yet: {lines[0][:200]}"
+            + (f" ... {lines[-1][:200]}" if len(lines) > 1 else "")
+        )
+        given = "".join(f'<file path="{rel}">\n{text}</file>\n' for rel, text in files.items())
         messages += [
-            {"role": "assistant", "content": f"<toml>\n{toml}</toml>"},
+            {"role": "assistant", "content": f"{given}<toml>\n{toml}</toml>"},
             {
                 "role": "user",
-                "content": f"That didn't work:\n{problem[-3000:]}\n\nFix it. Reply with the whole file.",
+                "content": f"That didn't work:\n{problem[-3000:]}\n\n"
+                "Fix it. Reply with every file and the whole config.",
             },
         ]
     (root / proj.CONFIG).unlink(missing_ok=True)
+    shutil.rmtree(root / SUPPORT, ignore_errors=True)
     raise RuntimeError(
         f"no working oqed.toml after {attempts} attempts; write one by hand (see `oqed init --help`)"
     )

@@ -15,6 +15,9 @@ int main(void) {
 """
 
 
+HELPER = "unsigned fold(unsigned x) { return x ^ (x >> 16); }\n"
+
+
 class Scripted:
     """Replies in order, recording what it was sent."""
 
@@ -61,3 +64,28 @@ def test_init_gives_up_and_leaves_no_config(tmp_path):
     else:
         raise AssertionError("expected init to give up")
     assert not (tmp_path / project.CONFIG).exists()
+
+
+def test_init_writes_driver_files_of_its_own(tmp_path):
+    import subprocess
+
+    (tmp_path / "lib.c").write_text(LIB)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "lib.c"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"], cwd=tmp_path, check=True
+    )
+    reply = (
+        f'<file path="oqed_support/main.c">\n{HELPER}{MAIN}</file>\n'
+        '<toml>\nbuild = "$CC -O2 -o app oqed_support/main.c lib.c"\nrun = "./app"\ntest = "./app"\n</toml>'
+    )
+    assert init.parse_reply(reply).startswith("build")
+    spent = asyncio.run(init.init(tmp_path, Scripted([reply]), log=lambda *_: None))
+    assert spent == 0.001
+    # Not committed, yet the fresh copy the checks build has it.
+    assert (tmp_path / "oqed_support" / "main.c").read_text() == HELPER + MAIN
+    assert init.parse_files('<file path="../x">a</file><file path="d.c">b</file>') == {
+        "oqed_support/d.c": "b"
+    }
+    found = {f.function: f for f in project.scan(project.load(tmp_path)).functions}
+    assert found["mix"].target is not None and "own driver" in found["fold"].skipped

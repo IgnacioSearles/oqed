@@ -100,6 +100,9 @@ def load(root: Path) -> Project:
     )
 
 
+SUPPORT = "oqed_support"  # drivers and generators `oqed init` writes
+
+
 @dataclass
 class Function:
     """A function definition found in the project."""
@@ -580,6 +583,9 @@ def discover(project: Project, rec: Path) -> Scan:
         scan.functions.append(f)
         if fn == "main":
             f.skipped = "main"
+            continue
+        if file.relative_to(project.root).parts[0] == SUPPORT:
+            f.skipped = "oqed init's own driver (measures the project, not part of it)"
             continue
         sig = signature(unit, d)
         if isinstance(sig, str):
