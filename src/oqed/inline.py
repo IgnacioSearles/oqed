@@ -100,10 +100,13 @@ def written_registers(code: bytes, memory: bool = False) -> set[str]:
     return out
 
 
-def needs_function(body: str) -> bool:
+def needs_function(body: str, nargs: int = 0) -> bool:
     """Whether `body` can only run as a function of its own (called, not
-    inlined): it uses the stack (push, call, locals) or jumps to another
-    symbol (a tail call)."""
+    inlined): it uses the stack (push, call, locals), jumps to another
+    symbol (a tail call), or the function takes more arguments than an inline
+    block can bind to registers."""
+    if nargs > len(CONSTRAINT):
+        return True
     try:
         written_registers(assemble(body, relocations=True), memory=True)
     except NotInlinable:

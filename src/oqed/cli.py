@@ -234,20 +234,24 @@ def inline_bench(
 def _print_scan(sc) -> None:
     targets = sc.targets
     n = len(sc.functions)
-    typer.echo(f"{n} functions in the project, {len(targets)} oqed can search (most-called first):")
-    typer.echo(f"  {'calls':>12}  function{'':24} location")
+    typer.echo(f"{n} functions in the project, {len(targets)} oqed can search (search order):")
+    typer.echo(f"  {'time':>6}  function{'':24} location")
     for f in targets:
-        typer.echo(f"  {f.calls:>12,}  {f.name:<32} {f.location}")
-    hot = [f for f in sc.functions if f.target is None and f.calls][:8]
+        typer.echo(f"  {_pct(f.time):>6}  {f.name:<32} {f.location}")
+    hot = [f for f in sc.functions if f.target is None and f.time][:8]
     if hot:
-        typer.echo("most-called functions it can't search yet:")
+        typer.echo("busiest functions it can't search yet:")
         for f in hot:
-            typer.echo(f"  {f.calls:>12,}  {f.name:<32} {f.skipped}")
+            typer.echo(f"  {_pct(f.time):>6}  {f.name:<32} {f.skipped}")
+
+
+def _pct(x: float) -> str:
+    return f"{100 * x:.1f}%" if x >= 0.001 else ("<0.1%" if x > 0 else "")
 
 
 @app.command()
 def scan(project_dir: Path = typer.Option(Path("."), "--project", help="directory with oqed.toml")):
-    """Find every function in a project oqed can search, ranked by calls in the workload. Free."""
+    """Find every function in a project oqed can search, ranked by time in the workload. Free."""
     from . import project
 
     _print_scan(project.scan(project.load(project_dir)))

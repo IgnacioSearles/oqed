@@ -160,6 +160,12 @@ PROJECT_NOTE = (
     "better; the C build measures {base:.2f})."
 )
 
+MANY_ARGS_NOTE = (
+    " This function takes more than 4 arguments, so write kind (2), a complete function: "
+    "arguments 1-6 arrive in rdi, rsi, rdx, rcx, r8, r9 and the rest on the stack, the 7th at "
+    "[rsp+8] on entry, the 8th at [rsp+16], and so on."
+)
+
 
 @dataclass
 class _Member:
@@ -291,6 +297,8 @@ class FunctionSearch:
         note = PROJECT_NOTE.format(
             bench=o.project.bench or f"CPU time of `{o.project.run}`", unit=self.unit, base=base.median
         )
+        if len(t.args) > len(inline.CONSTRAINT):
+            note += MANY_ARGS_NOTE
         self.context = prompt.target_context(
             t,
             [prompt.BaselineInfo(c, b.asm, b.mca.latency, b.mca.rthroughput, None) for c, b in bases.items()],
@@ -655,7 +663,7 @@ class FunctionSearch:
         # Inline asm or a whole function of its own: oqed-cc decides when it
         # substitutes. A whole function must follow the calling convention,
         # which the project's tests may not notice it breaking.
-        if inline.needs_function(asm) and (bad := abi.violations(asm)):
+        if inline.needs_function(asm, len(t.args)) and (bad := abi.violations(asm)):
             why = "breaks the calling convention: " + "; ".join(bad[:3])
             reject("abi", why, asm, expl, tried="breaks the ABI")
             return

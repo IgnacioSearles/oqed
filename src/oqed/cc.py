@@ -31,8 +31,8 @@ Anything unexpected falls back to compiling the original command unchanged;
 oqed-cc never breaks a build. Decisions are reported on stderr.
 
 Record mode (`OQED_RECORD=<dir>`, used by `oqed scan`) substitutes nothing: it
-logs each compile command to `<dir>/commands.jsonl`, builds with
-`-finstrument-functions`, and links in a call counter (`profile_rt.c`).
+logs each compile command to `<dir>/commands.jsonl`, adds `-g`, and links in a
+sampling profiler (`profile_rt.c`).
 """
 
 from __future__ import annotations
@@ -224,7 +224,7 @@ class Substitution:
     def __post_init__(self) -> None:
         d, asm = self.definition, self.entry.asm
         memory = self.entry.oracle == "project"
-        if not (memory and inline.needs_function(asm)):
+        if not (memory and inline.needs_function(asm, len(d.args))):
             self.body = inline.asm_body(asm, d.args, d.params, ret_cast=d.ret_spelling, memory=memory)
             return
         b = self.build or Build(Path("."))
@@ -557,7 +557,7 @@ PROFILE_RT = Path(__file__).with_name("profile_rt.c")
 
 
 def _record(cc: str, argv: list[str], rec: Path) -> list[str]:
-    """Log the compile, instrument it, and link the call counter into executables."""
+    """Log the compile, add debug info, and link the sampling profiler into executables."""
     rec.mkdir(parents=True, exist_ok=True)
     cmd = parse(argv)
     if cmd is not None:
@@ -569,7 +569,7 @@ def _record(cc: str, argv: list[str], rec: Path) -> list[str]:
         }
         with open(rec / "commands.jsonl", "a") as f:
             f.write(json.dumps(line) + "\n")
-    out = [cc, "-finstrument-functions", *argv]
+    out = [cc, *argv, "-g"]
     if not {"-c", "-S", "-E", "-M", "-MM"} & set(argv):
         obj = rec / f"profile_rt.{Path(cc).name}.o"
         if not obj.exists():

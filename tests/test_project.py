@@ -31,7 +31,7 @@ MAIN_C = """
 #include "lib.h"
 int main(int argc, char **argv) {
     u32 acc = 0;
-    for (u32 i = 0; i < 1000; i++) acc += hot(i + (u32)argc);
+    for (u32 i = 0; i < 50000000; i++) acc += hot(i + (u32)argc);
     struct point p = {acc, 1};
     printf("%u %d %d %d\\n", acc, cold(argc, 2), reads_table((unsigned char)argc), uses_struct(&p));
     return 0;
@@ -52,8 +52,8 @@ def test_scan_finds_ranks_and_slices(proj):
     sc = project.scan(proj)
     by = {f.name: f for f in sc.functions}
     assert set(by) == {"helper", "hot", "cold", "reads_table", "uses_struct", "never_called", "main"}
-    # Counted through inlining: hot and its inlined helper run 1000 times each.
-    assert by["hot"].calls == 1000 and by["helper"].calls == 1000 and by["cold"].calls == 1
+    # Sampled: the workload's time is in hot (with helper inlined into it).
+    assert by["hot"].time > 0.1 and by["cold"].time < 0.01
     assert [f.name for f in sc.targets] == ["hot", "cold", "reads_table", "uses_struct"]
     # One or two instructions from both compilers: nothing to gain.
     assert by["helper"].skipped.startswith("already minimal")
@@ -167,7 +167,7 @@ def test_project_oracle_judges_memory_candidates(oracle_proj, tmp_path, monkeypa
 
     sc = project.scan(oracle_proj)
     f = next(f for f in sc.functions if f.name == "load_le32")
-    assert f.oracle == "project" and f.calls == 200 * 4093
+    assert f.oracle == "project"
     t = load_target(f.target)
     answers = {
         "good": "mov eax, dword ptr [rdi]\nret",
@@ -320,3 +320,32 @@ def test_build_and_run_are_enough(oracle_proj, monkeypatch):
         assert not v.ok and v.stage == "test" and "exited with" in v.reason
     finally:
         o.close()
+
+
+def test_scan_takes_enums_const_pointers_and_many_arguments(tmp_path, monkeypatch):
+    monkeypatch.setattr(project, "MINIMAL", 0)
+    (tmp_path / "lib.c").write_text(
+        "static int early(int x) { return x * 3 + 1; }\n"
+        "typedef enum { FAST, SLOW } mode_t2;\n"
+        "typedef unsigned long len_t;  /* declared after the first function */\n"
+        "static len_t helper(const unsigned char *const p, mode_t2 m) {\n"
+        "    return p[0] + (m == SLOW) + early(p[1]);\n"
+        "}\n"
+        "long many(const unsigned char *const p, int a, int b, int c, int d, mode_t2 m) {\n"
+        "    return (long)helper(p, m) * a + b * c - d;\n"
+        "}\n"
+    )
+    (tmp_path / "main.c").write_text(
+        "#include <stdio.h>\n"
+        "long many(const unsigned char *const, int, int, int, int, int);\n"
+        "int main(int argc, char **argv) { unsigned char b[2] = {7, 9};\n"
+        '  printf("%ld\\n", many(b, argc, 2, 3, 4, 1)); return 0; }\n'
+    )
+    (tmp_path / "oqed.toml").write_text('build = "$CC -O2 -o app main.c lib.c"\nrun = "./app"\n')
+    sc = project.scan(project.load(tmp_path))
+    by = {f.name: f for f in sc.functions}
+    assert by["many"].target is not None, by["many"].skipped
+    assert by["many"].oracle == "project"  # more than 4 arguments: a whole function
+    t = load_target(by["many"].target)
+    assert t.args == ["u64", "i32", "i32", "i32", "i32", "i32"]
+    assert by["helper"].target is not None, by["helper"].skipped

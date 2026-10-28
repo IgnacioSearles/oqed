@@ -8,8 +8,8 @@ default `run`; when its output varies from run to run, only its exit status
 counts), and `bench`, which prints one number, lower is better unless
 `bench_higher_is_better` (by default oqed times `run`'s CPU time). Scanning:
 
-1. Builds the project with every compile logged and instrumented, then runs
-   the workload, which counts calls per function (`profile_rt.c`).
+1. Builds the project with every compile logged and `-g` added, then runs
+   the workload, sampling where its time goes (`profile_rt.c`, see `read_time`).
 2. Preprocesses each logged source with its own flags and walks clang's JSON
    AST for function definitions located in the project (the `.i` line markers
    say where each one came from).
@@ -22,7 +22,7 @@ counts), and `bench`, which prints one number, lower is better unless
    global data run in the harness and can be proven (`oracle = "harness"`);
    the rest are judged by the project itself (`oracle = "project"`, see
    `oracle.py`).
-4. Ranks targets by call count, most-called first.
+4. Ranks targets by their share of the workload's time, most first.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cc import _INT_TYPES
+from .targets import MAX_ARGS as HARNESS_ARGS
 from .targets import IntType, Target, load_target
 from .toolchain import ToolError, compile_to_asm, instruction_lines
 
@@ -106,7 +107,7 @@ class Function:
     name: str  # target name (the function name, qualified by file stem on a clash)
     function: str
     location: str  # path relative to the project root, with the line
-    calls: int = 0
+    time: float = 0.0  # share of the workload's time spent in its code (see `read_time`)
     target: Path | None = None  # set when oqed can search it
     oracle: str = "harness"  # "project" when judged by the project's test command
     skipped: str | None = None  # why not, otherwise
@@ -167,36 +168,92 @@ def record(project: Project) -> Path:
     return rec
 
 
-def read_profile(path: Path) -> dict[str, int]:
-    """Calls per function name, summed over every process that wrote a section."""
-    counts: dict[str, int] = {}
+def read_time(path: Path) -> dict[str, float]:
+    """Share of the workload's time per function, over every process that
+    wrote a section of the profile. A function's share is the larger of:
+
+    - the samples in its symbol's address range: its own code plus whatever
+      was inlined into it (what replacing the whole function can speed up);
+    - the samples whose innermost inlined frame (from the debug info) is it:
+      its own code wherever it was inlined (what a faster inline block can
+      speed up).
+
+    Shares are of all samples, including time in libraries and blocked."""
+    sections: list[tuple[str, int, list[tuple[int, int]]]] = []
     if not path.exists():
-        return counts
-    exe, anchor, symbols, bias = None, 0, {}, None
+        return {}
     for line in path.read_text().splitlines():
         key, _, value = line.partition(" ")
         if key == "exe":
-            exe, bias = value, None
-            symbols = _symbols(Path(value))
-        elif key == "anchor":
-            anchor = int(value, 16)
-            at = next((a for a, n in symbols.items() if n == "__oqed_prof_anchor"), None)
-            bias = None if at is None else anchor - at
-        elif exe and bias is not None:
-            name = symbols.get(int(key, 16) - bias)
-            if name:
-                counts[name] = counts.get(name, 0) + int(value)
-    return counts
+            sections.append((value, 0, []))
+        elif key == "anchor" and sections:
+            sections[-1] = (sections[-1][0], int(value, 16), sections[-1][2])
+        elif key == "pc" and sections:
+            pc, n = value.split()
+            sections[-1][2].append((int(pc, 16), int(n)))
+    total = sum(n for _, _, pcs in sections for _, n in pcs)
+    by_symbol: dict[str, int] = {}
+    by_inline: dict[str, int] = {}
+    for exe, anchor, pcs in sections:
+        symbols = _Symbols(_symbols(Path(exe)))
+        at = next((a for a, name in symbols.starts.items() if name == "__oqed_prof_anchor"), None)
+        if at is None:
+            continue
+        bias = anchor - at
+        local = [(pc - bias, n) for pc, n in pcs if symbols.containing(pc - bias)]
+        for (pc, n), inner in zip(local, _innermost(Path(exe), [pc for pc, _ in local]), strict=True):
+            name = symbols.containing(pc)
+            by_symbol[name] = by_symbol.get(name, 0) + n  # type: ignore[index]
+            if inner:
+                by_inline[inner] = by_inline.get(inner, 0) + n
+    names = set(by_symbol) | set(by_inline)
+    return {f: max(by_symbol.get(f, 0), by_inline.get(f, 0)) / total for f in names} if total else {}
 
 
-def _symbols(exe: Path) -> dict[int, str]:
-    nm = subprocess.run(["nm", "--defined-only", str(exe)], capture_output=True, text=True, check=False)
-    out = nm.stdout
-    syms = {}
-    for line in out.splitlines():
+def _innermost(exe: Path, addrs: list[int]) -> list[str | None]:
+    """The innermost inlined function at each address, from the debug info."""
+    if not addrs:
+        return []
+    out = subprocess.run(
+        ["llvm-symbolizer", f"--obj={exe}", "--inlining", "--output-style=JSON"],
+        input="\n".join(hex(a) for a in addrs),
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.splitlines()
+    names: list[str | None] = []
+    for line in out:
+        frames = json.loads(line).get("Symbol", []) if line.strip() else []
+        name = frames[0].get("FunctionName") if frames else None
+        names.append(name if name and name != "??" else None)
+    return names if len(names) == len(addrs) else [None] * len(addrs)
+
+
+class _Symbols:
+    """Function symbols of an executable, to look up an address."""
+
+    def __init__(self, syms: dict[int, tuple[str, int]]):
+        self.starts = {a: name for a, (name, _) in syms.items()}
+        self.sizes = {a: size for a, (_, size) in syms.items()}
+        self._sorted = sorted(syms)
+
+    def containing(self, addr: int) -> str | None:
+        i = bisect.bisect_right(self._sorted, addr) - 1
+        if i < 0:
+            return None
+        start = self._sorted[i]
+        return self.starts[start] if addr < start + self.sizes[start] else None
+
+
+def _symbols(exe: Path) -> dict[int, tuple[str, int]]:
+    nm = subprocess.run(["nm", "-S", "--defined-only", str(exe)], capture_output=True, text=True, check=False)
+    syms: dict[int, tuple[str, int]] = {}
+    for line in nm.stdout.splitlines():
         parts = line.split()
-        if len(parts) == 3 and parts[1] in "tTwW":
-            syms[int(parts[0], 16)] = parts[2]
+        # Sized code symbols only: a sizeless one (data_start, _end) would
+        # swallow every address after it, libraries included.
+        if len(parts) == 4 and parts[2] in "tTwW":
+            syms[int(parts[0], 16)] = (parts[3], int(parts[1], 16))
     return syms
 
 
@@ -277,11 +334,21 @@ def _resolve(unit: _Unit, spelling: str) -> IntType | None:
         if (t := _int(spelling)) is not None:
             return t
         name = re.sub(r"\b(const|volatile)\b", "", spelling).strip()
+        # Enums are passed as int (the compilers pick int unless a value doesn't fit).
+        if name.startswith("enum ") or any(x.get("kind") == "EnumDecl" for x in unit.types.get(name, [])):
+            return "i32"
         td = next((x for x in unit.types.get(name, []) if x.get("kind") == "TypedefDecl"), None)
         if td is None:
             return None
-        spelling = td["type"].get("desugaredQualType", td["type"]["qualType"])
+        # An anonymous enum's typedef "desugars" to its own name; its qualType says enum.
+        desugared = td["type"].get("desugaredQualType", td["type"]["qualType"])
+        spelling = td["type"]["qualType"] if desugared == name else desugared
     return None
+
+
+# Arguments a function may take: past 6 they are on the stack, which a whole
+# function reads like the C does.
+MAX_ARGS = 12
 
 
 @dataclass
@@ -294,19 +361,20 @@ class Signature:
 
 def _value(unit: _Unit, spelling: str) -> tuple[IntType | None, bool]:
     """An argument or return type as passed in a register, and whether it is a pointer."""
-    if spelling.rstrip().endswith("*"):
+    if re.sub(r"\b(const|volatile|restrict|__restrict)\b", "", spelling).rstrip().endswith("*"):
         return "u64", True
     return _resolve(unit, spelling), False
 
 
 def signature(unit: _Unit, d: dict) -> Signature | str:
     """How the function passes its arguments and result, or why it is out of scope:
-    up to 4 integers or pointers in registers, an integer, pointer or no result."""
+    integers or pointers (up to MAX_ARGS; more than 4 only as a whole function under
+    the project oracle), an integer, pointer or no result."""
     t = d["type"]
     if "..." in t["qualType"]:
         return "variadic"
     parms = [x for x in d.get("inner", []) if x.get("kind") == "ParmVarDecl"]
-    if not 1 <= len(parms) <= 4:
+    if not 1 <= len(parms) <= MAX_ARGS:
         return f"{len(parms)} arguments"
     vals = [_value(unit, p["type"].get("desugaredQualType", p["type"]["qualType"])) for p in parms]
     ret_spelling = t["qualType"].split("(")[0].strip()
@@ -353,8 +421,7 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
     for x in need.values():
         if x is d or root in unit.origin(_offset(x))[0].parents:  # type: ignore[arg-type]
             spans.append((*unit.span(x), x))
-    # Prototypes of the helpers go before the first function, so the order
-    # functions are defined in does not matter.
+    # Prototypes of the helpers, so the order functions are defined in does not matter.
     # The function's own prototype too: helpers may call it back (recursion).
     protos = [
         _STORAGE.sub("", unit.text[unit.span(x)[0] : _offset(_body(x))].decode()).strip() + ";"  # type: ignore[arg-type]
@@ -363,13 +430,13 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
         for _, _, x in sorted(spans, key=lambda s: s[0])
         if x.get("kind") == "FunctionDecl"
     ]
-    out, last_end = [], -1
+    # Types first (they never depend on functions), then the prototypes, then
+    # globals and functions in source order: a prototype may name any type, and
+    # a global's initializer may take a function's address.
+    types, rest, last_end = [], [], -1
     for a, b, x in sorted(spans, key=lambda s: s[0]):
         if b <= last_end:
             continue  # inside a declaration already copied (e.g. the struct in a typedef)
-        if protos and x.get("kind") == "FunctionDecl":
-            out.append("\n".join(protos))
-            protos = []
         text = unit.text[a:b].decode()
         if x is d:
             body = _offset(_body(d))  # type: ignore[arg-type]
@@ -377,8 +444,9 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
             text = head + unit.text[body:b].decode()
         elif x.get("kind") != "FunctionDecl":
             text += ";"
-        out.append(text)
+        (types if x.get("kind") in ("TypedefDecl", "RecordDecl", "EnumDecl") else rest).append(text)
         last_end = b
+    out = types + (["\n".join(protos)] if protos else []) + rest
     return _PRELUDE + "\n" + "\n\n".join(out) + "\n", loops
 
 
@@ -396,7 +464,9 @@ def _check(target: Target) -> tuple[str | None, bool]:
         try:
             asm = compile_to_asm(target, compiler)
         except ToolError as e:
-            return f"{compiler}: {str(e).strip().splitlines()[-1][:120]}", False
+            lines = str(e).strip().splitlines()
+            first = next((ln for ln in lines if "error:" in ln), lines[-1])
+            return f"{compiler}: {first.split('error:', 1)[-1].strip()[:150]}", False
         for line in asm.splitlines():
             ins = line.strip()
             # `call`, and `jmp name` (a tail call) leave the function;
@@ -439,7 +509,7 @@ def slice_sha(src: str, root: Path) -> str:
 
 
 def discover(project: Project, rec: Path) -> Scan:
-    calls = read_profile(rec / "profile.txt")
+    time = read_time(rec / "profile.txt")
     targets_dir = project.state / "targets"
     shutil.rmtree(targets_dir, ignore_errors=True)
     targets_dir.mkdir(parents=True)
@@ -477,7 +547,7 @@ def discover(project: Project, rec: Path) -> Scan:
     for unit, d, file, line, hashed in seen.values():
         fn = d["name"]
         name = fn if names.count(fn) == 1 else f"{fn}.{file.stem}"
-        f = Function(name, fn, f"{file.relative_to(project.root)}:{line}", calls.get(fn, 0))
+        f = Function(name, fn, f"{file.relative_to(project.root)}:{line}", time.get(fn, 0.0))
         scan.functions.append(f)
         if fn == "main":
             f.skipped = "main"
@@ -503,6 +573,8 @@ def discover(project: Project, rec: Path) -> Scan:
         }
         if sig.ret_c:
             meta["ret_c"] = sig.ret_c
+        if len(sig.args) > HARNESS_ARGS:
+            meta["oracle"] = "project"  # the harness and inline blocks take 4 register arguments
         (tdir / "meta.toml").write_text(_toml(meta))
         why, reads_globals = _check(load_target(tdir))
         if why is None and (sig.pointers or sig.ret_c or reads_globals):
@@ -514,8 +586,13 @@ def discover(project: Project, rec: Path) -> Scan:
         else:
             f.target = tdir
             f.oracle = meta.get("oracle", "harness")
-    scan.functions.sort(key=lambda f: (-f.calls, f.target is None, f.name))
+    scan.functions = rank(scan.functions)
     return scan
+
+
+def rank(functions: list[Function]) -> list[Function]:
+    """Search order: most time first; functions never seen running go last."""
+    return sorted(functions, key=lambda f: (-f.time, f.name))
 
 
 def _toml(meta: dict) -> str:

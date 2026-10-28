@@ -14,7 +14,7 @@ BENCHMARKS_DIR = Path(__file__).resolve().parents[2] / "benchmarks"
 
 # System V AMD64 integer argument registers, in order.
 ARG_REGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
-MAX_ARGS = 4
+MAX_ARGS = 4  # for the harness oracle and inline blocks; the project oracle takes more
 
 
 def bit_width(t: IntType) -> int:
@@ -55,7 +55,7 @@ def load_target(name_or_path: str | Path) -> Target:
     if not path.is_dir():
         path = BENCHMARKS_DIR / str(name_or_path)
     meta = tomllib.loads((path / "meta.toml").read_text())
-    if len(meta["args"]) > MAX_ARGS:
+    if len(meta["args"]) > MAX_ARGS and meta.get("oracle") != "project":
         raise ValueError(f"{path.name}: at most {MAX_ARGS} register arguments supported")
     ref = path / "reference.S"
     return Target(

@@ -6,7 +6,7 @@ few seconds that exercises the code, deterministic where possible), and
 optionally `test` and `bench`. oqed then checks the proposal by running it:
 
 1. `build` with oqed-cc in record mode must compile C through `$CC` and link,
-   and `run` must exit 0 and count calls into the project's functions;
+   and `run` must exit 0 and spend time in the project's code;
 2. `run` must take between 0.1 and 60 seconds of CPU time;
 3. `test`, if given, must pass; `bench`, if given, must print a number.
 
@@ -129,17 +129,18 @@ def check(root: Path, toml: str, log=print) -> str | None:
     except RuntimeError as e:
         return str(e)
     log(f"  built and ran in {time.perf_counter() - t0:.0f}s")
-    calls = proj.read_profile(rec / "profile.txt")
-    if not calls:
+    shares = proj.read_time(rec / "profile.txt")
+    if not shares:
         return (
-            "the build compiled through $CC, but `run` called none of the functions it compiled "
+            "the build compiled through $CC, but `run` spent no time in the code it compiled "
             "(is the program linked against the library just built, statically?)"
         )
     try:
         ms = min(cpu_ms(p.run, root) for _ in range(2))
     except RuntimeError as e:
         return str(e)
-    log(f"  run: {ms:.0f} ms CPU, {len(calls)} functions called, {sum(calls.values()):,} calls")
+    top = ", ".join(f"{name} {100 * t:.0f}%" for name, t in sorted(shares.items(), key=lambda x: -x[1])[:3])
+    log(f"  run: {ms:.0f} ms CPU; most time in {top}")
     if not RUN_CPU_MS[0] <= ms <= RUN_CPU_MS[1]:
         return f"`run` takes {ms:.0f} ms of CPU time; it should take about 1 second (0.3 to 3)"
 
