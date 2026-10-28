@@ -407,6 +407,8 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
                 kind, name = ref.get("kind"), ref.get("name")
                 if kind == "FunctionDecl" and name in unit.defs:
                     todo.append(unit.defs[name])
+                elif kind == "FunctionDecl" and ref["id"] in unit.by_id:
+                    todo.append(unit.by_id[ref["id"]])  # defined in another file: its prototype
                 elif kind == "VarDecl" and ref["id"] in unit.by_id:
                     todo.append(unit.by_id[ref["id"]])
                 elif kind == "EnumConstantDecl" and ref["id"] in unit.enum_of:
@@ -428,7 +430,7 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
         if x is d
         else unit.text[unit.span(x)[0] : _offset(_body(x))].decode().strip() + ";"  # type: ignore[arg-type]
         for _, _, x in sorted(spans, key=lambda s: s[0])
-        if x.get("kind") == "FunctionDecl"
+        if x.get("kind") == "FunctionDecl" and _body(x)
     ]
     # Types first (they never depend on functions), then the prototypes, then
     # globals and functions in source order: a prototype may name any type, and
@@ -442,8 +444,12 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
             body = _offset(_body(d))  # type: ignore[arg-type]
             head = _STORAGE.sub("", unit.text[a:body].decode())
             text = head + unit.text[body:b].decode()
-        elif x.get("kind") != "FunctionDecl":
+        elif x.get("kind") != "FunctionDecl" or not _body(x):
             text += ";"
+        if x.get("kind") == "FunctionDecl" and not _body(x):
+            protos.append(text)
+            last_end = b
+            continue
         (types if x.get("kind") in ("TypedefDecl", "RecordDecl", "EnumDecl") else rest).append(text)
         last_end = b
     out = types + (["\n".join(protos)] if protos else []) + rest
