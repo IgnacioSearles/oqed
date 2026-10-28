@@ -379,3 +379,15 @@ def test_benchmarks_need_enough_paired_wins_and_run_alone():
     b, e = log.index(("bench", 0)), log.index(("benched", 0))
     assert e == b + 1  # nothing started or finished during the benchmark
     assert {("built", 1), ("built", 2)} <= set(log[:b])  # builds already running finish first
+
+
+def test_test_output_files_must_match(tmp_path):
+    from oqed.oracle import differing_file, run_test
+
+    (tmp_path / "in.txt").write_text("abc")
+    out, files = run_test("cp in.txt out.txt && echo done", tmp_path)
+    assert out.stdout == "done\n" and set(files) == {"out.txt"}  # in.txt was only read
+    (tmp_path / "in.txt").write_text("abd")
+    _, other = run_test("cp in.txt out.txt && echo done", tmp_path)
+    assert differing_file(files, other) == "out.txt"
+    assert differing_file(files, files) is None

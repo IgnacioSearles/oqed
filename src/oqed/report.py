@@ -4,7 +4,8 @@ Two copies of the project are built, one with the plain compiler and one
 with oqed-cc applying `oqed.lock` exactly as a user's build would (proofs,
 source hashes, the vectorization guard; not the oracle's trust mode). Then:
 
-- the test command (by default `run`) must give the same result on both;
+- the test command (by default `run`) must give the same result on both:
+  exit status, output and the contents of every file it writes;
 - the benchmark (by default `run`'s CPU time) runs `runs` times on each,
   alternating, and the medians and spreads are reported.
 
@@ -21,7 +22,7 @@ import tempfile
 from pathlib import Path
 
 from . import lock
-from .oracle import TEST_TIMEOUT_S, _run, measure
+from .oracle import _run, differing_file, measure, run_test
 from .project import Project, cc_env
 
 
@@ -63,12 +64,17 @@ def report(project: Project, runs: int = 11, log=print) -> dict:
             log(f"  {n[:160]}")
 
         test = project.test_command
-        a, c = (_run(test, t, timeout=TEST_TIMEOUT_S) for t in (plain, tuned))
+        (a, fa), (a2, fa2), (c, fc) = (run_test(test, t) for t in (plain, plain, tuned))
         same_exit = a.returncode == c.returncode == 0
         same_output = a.stdout == c.stdout
         if not same_exit:
             raise RuntimeError(f"`{test}` fails: plain exit {a.returncode}, oqed exit {c.returncode}")
-        log(f"[report] `{test}`: both exit 0, output {'identical' if same_output else 'DIFFERENT'}")
+        stable = {f: h for f, h in fa.items() if fa2.get(f) == h}  # files that don't vary run to run
+        bad_file = differing_file(stable, fc)
+        log(
+            f"[report] `{test}`: both exit 0, output {'identical' if same_output else 'DIFFERENT'}, "
+            f"{len(stable)} output files " + (f"DIFFERENT ({bad_file})" if bad_file else "identical")
+        )
 
         base, cand = [], []
         for _i in range(runs):
@@ -89,9 +95,13 @@ def report(project: Project, runs: int = 11, log=print) -> dict:
             "notes": notes,
             "test": test,
             "test_output_identical": same_output,
+            "output_files": len(stable),
+            "output_files_identical": bad_file is None,
             "plain": b_q,
             "oqed": c_q,
             "speedup": speedup,
+            # Only an oqed build that behaves exactly like the plain one counts.
+            "valid": same_output and bad_file is None,
             "faster_runs": wins,  # of `runs` alternating pairs
         }
         project.state.mkdir(exist_ok=True)
@@ -101,6 +111,11 @@ def report(project: Project, runs: int = 11, log=print) -> dict:
             f"(IQR {b_q['q3'] - b_q['q1']:.2g}), oqed {c_q['median']:.4g} (IQR {c_q['q3'] - c_q['q1']:.2g}): "
             f"{speedup}x, faster in {wins} of {runs} paired runs, "
             f"{len(applied)} of {len(entries)} entries applied"
+            + (
+                ""
+                if result["valid"]
+                else "; NOT VALID: the oqed build's output differs, so this doesn't count"
+            )
         )
         return result
     finally:

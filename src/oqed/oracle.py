@@ -10,9 +10,13 @@ in the harness on random inputs. For those the project is the test:
    oqed-cc in trust mode, which substitutes without proving and logs what it
    applied. A candidate that doesn't build, or isn't substituted, fails.
 3. The project's `test` command (by default `run`) must print exactly what
-   the C build printed. A crash, a timeout or any difference fails. When the
-   C build itself prints something different on every run, only the exit
-   status is compared.
+   the C build printed, and every file it writes must have exactly the
+   contents the C build's run wrote. A crash, a timeout or any difference
+   fails. (A round trip alone is a weak test: a `longest_match` that finds
+   shorter matches still decompresses to the input, but writes a different,
+   larger .gz.) Output that differs between two runs of the C build itself
+   (timestamps, timings) is not compared: then only the exit status, or only
+   the files that don't vary.
 4. The `bench` command (one number) runs `bench_runs` times, alternating with
    a baseline build so both see the same machine state. Without a `bench`,
    the CPU time of `run` is the number. Nothing else oqed runs (other
@@ -27,7 +31,9 @@ not a proof: lock entries found this way are `tested` and need `--unsafe`.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
+import os
 import re
 import shutil
 import statistics
@@ -52,6 +58,35 @@ def wins_needed(runs: int) -> int:
         if sum(math.comb(runs, i) for i in range(k, runs + 1)) / 2**runs <= SIGN_TEST_P:
             return k
     return runs + 1  # too few runs to tell: never faster
+
+
+def run_test(command: str, tree: Path) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+    """Run the test command; also the hash of every file it created or changed."""
+    before = _mtimes(tree)
+    out = _run(command, tree, timeout=TEST_TIMEOUT_S)
+    written = {}
+    for rel, m in _mtimes(tree).items():
+        if before.get(rel) != m:
+            written[rel] = hashlib.sha256((tree / rel).read_bytes()).hexdigest()
+    return out, written
+
+
+def _mtimes(tree: Path) -> dict[str, int]:
+    out = {}
+    for dirpath, dirs, files in os.walk(tree):
+        dirs[:] = [d for d in dirs if d not in (".oqed", ".git")]
+        for f in files:
+            p = Path(dirpath) / f
+            try:
+                out[str(p.relative_to(tree))] = p.stat().st_mtime_ns
+            except OSError:
+                continue
+    return out
+
+
+def differing_file(expected: dict[str, str], written: dict[str, str]) -> str | None:
+    """The first file the C build's test wrote that this one didn't write the same."""
+    return next((f for f, h in sorted(expected.items()) if written.get(f) != h), None)
 
 
 class BenchLock:
@@ -131,6 +166,7 @@ class ProjectOracle:
             self._trees.put_nowait(tree)
         self.expected: str | None = None
         self.exit_only = False  # the test's output varies between runs
+        self.expected_files: dict[str, str] = {}  # files the test writes, the same every run
 
     def close(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -156,11 +192,12 @@ class ProjectOracle:
         if proc.returncode != 0:
             raise RuntimeError(f"baseline build failed:\n{(proc.stdout + proc.stderr)[-2000:]}")
         test = self.project.test_command
-        outs = [_run(test, self.base, timeout=TEST_TIMEOUT_S) for _ in range(2)]
-        if any(o.returncode != 0 for o in outs):
-            raise RuntimeError(f"`{test}` fails on the baseline build:\n{outs[0].stderr[-2000:]}")
-        self.exit_only = outs[0].stdout != outs[1].stdout
-        self.expected = outs[0].stdout
+        (a, fa), (b, fb) = (run_test(test, self.base) for _ in range(2))
+        if a.returncode or b.returncode:
+            raise RuntimeError(f"`{test}` fails on the baseline build:\n{a.stderr[-2000:]}")
+        self.exit_only = a.stdout != b.stdout
+        self.expected = a.stdout
+        self.expected_files = {f: h for f, h in fa.items() if fb.get(f) == h}
 
     def _check(self, tree: Path, entry: lock.LockEntry) -> Verdict:
         entries = [e for e in self.entries if e.function != entry.function] + [entry]
@@ -173,7 +210,7 @@ class ProjectOracle:
             why = [ln for ln in proc.stderr.splitlines() if fn in ln or "internal error" in ln]
             return Verdict(False, "not substituted: " + (why[0] if why else "function not found"), "inline")
         try:
-            out = _run(self.project.test_command, tree, timeout=TEST_TIMEOUT_S)
+            out, written = run_test(self.project.test_command, tree)
         except subprocess.TimeoutExpired:
             return Verdict(False, f"project test timed out after {TEST_TIMEOUT_S}s", "test")
         if out.returncode != 0:
@@ -192,6 +229,13 @@ class ProjectOracle:
                 f"project test output differs at line {i + 1}: {line(got)!r}, C gives {line(want)!r}",
                 "test",
             )
+        if f := differing_file(self.expected_files, written):
+            what = (
+                "did not write the file the C build writes,"
+                if f not in written
+                else "wrote different contents than the C build to"
+            )
+            return Verdict(False, f"project test {what} {f}", "test")
         return Verdict(True)
 
     def _number(self, tree: Path) -> float:
