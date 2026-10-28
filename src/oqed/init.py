@@ -8,7 +8,8 @@ optionally `test` and `bench`. oqed then checks the proposal by running it:
 1. `build` with oqed-cc in record mode must compile C through `$CC` and link,
    and `run` must exit 0 and spend time in the project's code;
 2. `run` must take between 0.5 and 5 seconds of CPU time;
-3. `test`, if given, must pass; `bench`, if given, must print a number.
+3. a second `build` must leave every file the size the first left it;
+4. `test`, if given, must pass on its own after a build; `bench`, if given, must print a number.
 
 When a step fails, the error goes back to the model for another proposal, a
 few times. Every proposal and check is printed, so a person can see what was
@@ -146,17 +147,30 @@ def check(root: Path, toml: str, log=print) -> str | None:
     if not RUN_CPU_MS[0] <= ms <= RUN_CPU_MS[1]:
         return f"`run` takes {ms:.0f} ms of CPU time; it should take about 1 second (0.5 to 3)"
 
-    if p.test:
-        # The oracle runs `test` alone in a fresh copy of the project, after a build.
-        with tempfile.TemporaryDirectory(prefix="oqed-init-") as d:
-            fresh = Path(d) / root.name
-            shutil.copytree(root, fresh, ignore=shutil.ignore_patterns(".oqed", ".git"))
-            env = {**os.environ, "CC": p.cc}
+    # The oracle runs `test` alone in a fresh copy of the project, after a
+    # build, and rebuilds its copies many times: a second build must leave the
+    # tree as the first did (a build that appends to its input file doesn't).
+    with tempfile.TemporaryDirectory(prefix="oqed-init-") as d:
+        fresh = Path(d) / root.name
+        shutil.copytree(root, fresh, ignore=shutil.ignore_patterns(".oqed", ".git"))
+        env = {**os.environ, "CC": p.cc}
+        sizes = []
+        for _ in range(2):
             b = subprocess.run(
                 p.build, shell=True, cwd=fresh, env=env, capture_output=True, text=True, check=False
             )
             if b.returncode != 0:
                 return f"`build` fails in a fresh copy of the project:\n{(b.stdout + b.stderr)[-1500:]}"
+            sizes.append({f: f.stat().st_size for f in fresh.rglob("*") if f.is_file()})
+        changed = [f for f in sizes[1] if f in sizes[0] and sizes[1][f] != sizes[0][f]]
+        if changed:
+            f = changed[0]
+            return (
+                f"running `build` twice gives a different tree: {f.relative_to(fresh)} is "
+                f"{sizes[0][f]} bytes after one build and {sizes[1][f]} after two (does it append "
+                "to a file without truncating it first?). Each build must produce the same files."
+            )
+        if p.test:
             t = subprocess.run(p.test, shell=True, cwd=fresh, capture_output=True, text=True, check=False)
             if t.returncode != 0:
                 return (
