@@ -73,7 +73,11 @@ own). No network.
 correct: the project's test suite or a round trip (compress then decompress and compare). \
 It runs ON ITS OWN in a fresh copy right after `build` (not after `run`), so it must create \
 any input it needs. Omit it to use `run` (then make `run` itself fail when results are wrong, \
-e.g. end it with a `cmp`).
+e.g. end it with a `cmp`). oqed compares what the test prints and every file it writes with \
+the original build's, byte for byte, so make those cover ALL of the program's results: print \
+or write the full output, or a hash over every byte of it (e.g. FNV-1a), never a summary like \
+a length or a few sample bytes. If you write a driver program, it should hash everything it \
+produces and print the hashes.
 - bench (optional): a command printing one number on its LAST line measuring speed; omit \
 it to let oqed time `run` itself (usually best). If given, set bench_unit, and set \
 bench_higher_is_better = true (a TOML boolean) for throughputs like MB/s.

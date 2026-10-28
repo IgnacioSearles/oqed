@@ -267,8 +267,19 @@ class _Unit:
         self.text = ipath.read_bytes()
         self.cwd = cwd
         self.markers: list[tuple[int, int, str]] = []  # (offset after the marker line, line, file)
-        for m in re.finditer(rb'^# (\d+) "([^"]*)"[^\n]*\n', self.text, re.M):
+        # System headers the project's own files include, for the slice's prelude:
+        # a marker entering a system header (flags 1 and 3) right after one in a
+        # project file. Named as included (<math.h>), not by the path found.
+        self.system_headers: list[str] = []
+        in_system = False
+        for m in re.finditer(rb'^# (\d+) "([^"]*)"([^\n]*)\n', self.text, re.M):
             self.markers.append((m.end(), int(m.group(1)), m.group(2).decode()))
+            flags = m.group(3).split()
+            if b"1" in flags and b"3" in flags and not in_system:
+                name = m.group(2).decode().rsplit("/include/", 1)[-1]
+                if name not in self.system_headers:
+                    self.system_headers.append(name)
+            in_system = b"3" in flags
         self._starts = [m[0] for m in self.markers]
         out = subprocess.run(
             ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", "-w", "-x", "cpp-output", str(ipath)],
@@ -413,6 +424,12 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
                     todo.append(unit.by_id[ref["id"]])
                 elif kind == "EnumConstantDecl" and ref["id"] in unit.enum_of:
                     todo.append(unit.by_id[unit.enum_of[ref["id"]]])
+            # A typedef of an anonymous struct owns the record: walk its fields.
+            for key in ("ownedTagDecl", "decl"):
+                ref = n.get(key)
+                if isinstance(ref, dict) and ref.get("kind") in ("RecordDecl", "EnumDecl"):
+                    if ref.get("id") in unit.by_id:
+                        todo.append(unit.by_id[ref["id"]])
             t = n.get("type")
             if isinstance(t, dict):
                 for ident in re.findall(r"[A-Za-z_]\w*", t.get("qualType", "")):
@@ -453,7 +470,8 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
         (types if x.get("kind") in ("TypedefDecl", "RecordDecl", "EnumDecl") else rest).append(text)
         last_end = b
     out = types + (["\n".join(protos)] if protos else []) + rest
-    return _PRELUDE + "\n" + "\n\n".join(out) + "\n", loops
+    prelude = _PRELUDE + "".join(f"#include <{h}>\n" for h in unit.system_headers if f"<{h}>" not in _PRELUDE)
+    return prelude + "\n" + "\n\n".join(out) + "\n", loops
 
 
 # Functions both compilers reduce to this many instructions (plus `ret`) aren't worth a search.
