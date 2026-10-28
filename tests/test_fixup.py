@@ -24,3 +24,19 @@ def test_only_unambiguous_errors_are_fixed():
     assert "\tadd r10, edx" in fixed and "\tmov rcx, dword ptr [rdi]" in fixed
     assert len(notes) == 4
     assert fixup.fix("\tmov eax, edi\n\tret\n") == ("\tmov eax, edi\n\tret\n", [])
+
+
+def test_gcc_addresses_take_the_usual_form():
+    from oqed.toolchain import gcc_addresses
+
+    body = (
+        "\tmov QWORD PTR 8[rsp], r10\n\tmov eax, DWORD PTR -4[rbp+rcx*4]\n"
+        "\tlea rax, table.3[rip]\n\tcall [QWORD PTR 32[r10]]\n\tmov eax, [rdi]\n"
+    )
+    assert gcc_addresses(body).splitlines() == [
+        "\tmov QWORD PTR [rsp+8], r10",
+        "\tmov eax, DWORD PTR [rbp+rcx*4-4]",
+        "\tlea rax, [rip+table.3]",
+        "\tcall QWORD PTR [r10+32]",
+        "\tmov eax, [rdi]",
+    ]

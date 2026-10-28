@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from .events import Baseline
 from .targets import Target
-from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, Compiler, McaReport, compile_to_asm, mca
+from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, Compiler, McaReport, ToolError, compile_to_asm, mca
 
 
 class CompilerBaseline(BaseModel):
@@ -22,4 +22,12 @@ def compute(
     target: Target, compiler: Compiler, march: str = DEFAULT_MARCH, mcpu: str = DEFAULT_MCPU
 ) -> CompilerBaseline:
     asm = compile_to_asm(target, compiler, march)
-    return CompilerBaseline(compiler=compiler, asm=asm, mca=mca(asm, target, mcpu))
+    try:
+        report = mca(asm, target, mcpu)
+    except ToolError as e:
+        # The estimate only informs the prompt; a listing llvm-mca can't read
+        # must not stop the search.
+        report = McaReport(
+            mcpu=mcpu, instructions=0, uops=0, rthroughput=0.0, latency=0.0, report=str(e)[-500:]
+        )
+    return CompilerBaseline(compiler=compiler, asm=asm, mca=report)

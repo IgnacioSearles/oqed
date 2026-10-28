@@ -50,7 +50,25 @@ def _run(cmd: list[str], stdin: str | None = None) -> str:
 def compile_to_asm(target: Target, compiler: Compiler, march: str = DEFAULT_MARCH) -> str:
     """Compile the target and return just its function body."""
     out = _run([compiler, *CFLAGS, f"-march={march}", "-S", "-o", "-", str(target.c_file)])
-    return extract_function(out, target.function)
+    body = extract_function(out, target.function)
+    return gcc_addresses(body) if compiler == "gcc" else body
+
+
+# gcc's Intel syntax puts the displacement outside the brackets.
+_GCC_ADDRESS = re.compile(r"(?<![\w.$])(-?[\w.$@]+(?:[+-]\d+)?)\[([^\]]+)\]")
+
+
+def gcc_addresses(body: str) -> str:
+    """`QWORD PTR 8[rsp]` -> `QWORD PTR [rsp+8]`, `-4[rbp]` -> `[rbp-4]`, `x[rip]` ->
+    `[rip+x]`: the form clang writes, the models expect and llvm-mca parses."""
+
+    def one(m: re.Match) -> str:
+        disp, inside = m.group(1), m.group(2)
+        return f"[{inside}-{disp[1:]}]" if disp.startswith("-") else f"[{inside}+{disp}]"
+
+    out = _GCC_ADDRESS.sub(one, body)
+    # `call [QWORD PTR 32[r10]]` (an indirect call) comes out doubly bracketed.
+    return re.sub(r"\[((?:BYTE|WORD|DWORD|QWORD) PTR \[[^\]]+\])\]", r"\1", out)
 
 
 def extract_function(asm: str, name: str) -> str:
