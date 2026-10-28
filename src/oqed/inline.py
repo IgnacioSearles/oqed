@@ -109,39 +109,54 @@ def _template(body: str) -> str:
     return "".join(f"\t{ln}\\n" for ln in lines)
 
 
-def _arg_c_type(t: IntType) -> str:
-    """Width the asm sees an argument at: narrow types extended to 32 bits, as
-    the System V convention compilers rely on (and the verifier assumes)."""
-    if bit_width(t) == 64:
-        return _C_TYPES[t]
-    return "int32_t" if is_signed(t) else "uint32_t"
+# Builtin spellings, so generated code needs no headers (oqed-cc splices it
+# into preprocessed sources). Narrow arguments are extended to 32 bits, as
+# the System V convention compilers rely on (and the verifier assumes).
+_ASM_ARG_TYPE = {
+    **{t: "int" for t in ("i8", "i16", "i32")},
+    **{t: "unsigned int" for t in ("u8", "u16", "u32")},
+    "i64": "long long",
+    "u64": "unsigned long long",
+}
 
 
-def inline_function(body: str, target: Target, name: str) -> str:
-    """C source of `static inline RET name(args)` running `body` as inline asm
-    (Intel syntax: compile with `-masm=intel`)."""
-    if len(target.args) > len(CONSTRAINT):
+def asm_body(body: str, args: list[IntType], names: list[str], ret_cast: str | None = None) -> str:
+    """A C function body, on one line, that runs `body` as inline asm on the
+    parameters `names` and returns the result (converted to the function's
+    return type by the `return`). The template is Intel syntax; dialect
+    alternatives switch to it when the compiler emits AT&T (the default) and
+    add nothing under `-masm=intel`."""
+    if len(args) > len(CONSTRAINT):
         raise NotInlinable(f"more than {len(CONSTRAINT)} register arguments")
     written = written_registers(assemble(body))
-    names = [chr(ord("a") + i) for i in range(len(target.args))]
-    params = ", ".join(f"{_C_TYPES[t]} {n}" for t, n in zip(target.args, names, strict=True))
-    decls = [f"    {_arg_c_type(t)} v{n} = {n};" for t, n in zip(target.args, names, strict=True)]
-    outs, ins = ['"=a"(r)'], []
-    for reg, n in zip(ARG_REGS, names, strict=False):
-        (outs if reg in written else ins).append(f'"{"+" if reg in written else ""}{CONSTRAINT[reg]}"(v{n})')
-    bound = {"rax", *ARG_REGS[: len(names)]}
+    decls = "".join(
+        f"{_ASM_ARG_TYPE[t]} __oqed_v{i} = {n}; " for i, (t, n) in enumerate(zip(args, names, strict=True))
+    )
+    outs, ins = ['"=a"(__oqed_r)'], []
+    for i, reg in enumerate(ARG_REGS[: len(args)]):
+        (outs if reg in written else ins).append(
+            f'"{"+" if reg in written else ""}{CONSTRAINT[reg]}"(__oqed_v{i})'
+        )
+    bound = {"rax", *ARG_REGS[: len(args)]}
     clobbers = [f'"{r}"' for r in sorted(written - bound) if not r.startswith(("xmm", "ymm", "zmm"))]
     clobbers += [f'"xmm{r[3:]}"' for r in sorted(written) if r.startswith(("xmm", "ymm", "zmm"))]
     clobbers.append('"cc"')
+    template = "{.intel_syntax noprefix\\n|}" + _template(body) + "{.att_syntax prefix\\n|}"
     return (
-        f"static inline __attribute__((always_inline)) {_C_TYPES[target.ret]} {name}({params}) {{\n"
-        + "\n".join(decls)
-        + "\n    uint64_t r;\n"
-        + f'    __asm__("{_template(body)}"\n'
-        + f"            : {', '.join(outs)}\n"
-        + f"            : {', '.join(ins)}\n"
-        + f"            : {', '.join(clobbers)});\n"
-        + f"    return ({_C_TYPES[target.ret]})r;\n}}\n"
+        f"{{ {decls}unsigned long long __oqed_r; "
+        f'__asm__("{template}" : {", ".join(outs)} : {", ".join(ins)} : {", ".join(clobbers)}); '
+        f"return {f'({ret_cast})' if ret_cast else ''}__oqed_r; }}"
+    )
+
+
+def inline_function(body: str, target: Target, name: str) -> str:
+    """C source of `static inline RET name(args)` running `body` as inline asm."""
+    names = [chr(ord("a") + i) for i in range(len(target.args))]
+    params = ", ".join(f"{_C_TYPES[t]} {n}" for t, n in zip(target.args, names, strict=True))
+    return (
+        f"static inline __attribute__((always_inline)) {_C_TYPES[target.ret]} {name}({params})\n"
+        + asm_body(body, target.args, names, ret_cast=_C_TYPES[target.ret])
+        + "\n"
     )
 
 

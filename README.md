@@ -6,7 +6,7 @@ oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C function, i
 
 Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
-> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. The build integration is not built yet. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. The build integration (`oqed optimize` → `oqed.lock` → `oqed-cc`) works on the stb_image testbed. Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 
@@ -20,7 +20,7 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
   assemble ─► ISA check ─► differential test ─► llvm-mca ─► inlined latency ─► SMT proof
                     │  counterexamples fed back to the model
                     ▼
-        best verified candidates ─► oqed.lock ─► CC=oqed-cc make  (planned)
+        best verified candidates ─► oqed.lock ─► make CC=oqed-cc
 ```
 
 - **Models:** `muse-spark-1.3` ([Meta Model API](https://dev.meta.ai/docs/overview)) generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history and the best candidate's bottleneck report when progress stalls. Muse Spark Open (`meta-models/muse-spark-open-1026` on [Baseten](https://docs.baseten.co)) can run the volume tier instead.
@@ -29,7 +29,12 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 - **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
 - **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
 - **Inlined latency:** the search measures every candidate as an `asm` statement inside a loop where each result feeds the next call, against the C compiled into the same loop by clang and gcc in the same run (`--bench call` restores call/ret timing). Candidates that touch memory or the stack are rejected as not inlinable. `oqed inline-bench <run>` turns each winner into a GNU `asm` statement (argument registers bound by constraint, exact clobbers from the decoded instructions), times it against the C source inside a dependent loop (latency) and an independent loop (throughput, with and without the compiler's auto-vectorization), and re-proves the bytes the compiler emits around the `asm` statement. Timing through `call`/`ret` adds ~4.7 ticks per call and can rank candidates wrongly: on stb_image, call-mode wins of 1.2–1.4× on `paeth` and `blinn_8x8` came out at 1.00× inlined, and `bitreverse16` went from 1.17× to 0.52×. Real missed-idiom wins were understated instead: re-measured inlined, `clz_smear` went from 2.35× to 6.5×, `parity` from 1.74× to 3.5×, `round_up_pow2` from 2.2× to 2.6×, and stb's `high_bit` (lzcnt) is 4.3×. Against a loop the compiler auto-vectorizes, every one of them loses throughput (0.2–0.97×).
-- **No assembly in your codebase** (planned): `oqed optimize` records verified winners in a reviewable `oqed.lock`, and `oqed-cc` is a drop-in compiler wrapper (`CC=oqed-cc make`) that applies them at build time without network calls. It falls back to the original C whenever the source, compiler or flags change, and whenever a substitution would stop the compiler from auto-vectorizing a loop.
+- **No assembly in your codebase:** `oqed optimize` records proven winners in a reviewable `oqed.lock`, and `oqed-cc` is a drop-in compiler wrapper (`make CC=oqed-cc`, or `CC="oqed-cc --cc=gcc"`) that applies them at build time, with no network calls. For each C file it preprocesses with your flags (so functions in headers are found), locates each lock entry's function with clang's JSON AST, replaces the body with the asm as an inline `asm` statement, and then:
+  - **proves the substitution against your function as it is now**, compiled by your compiler with your flags: a wrapper calling the function is compiled from the original and from the rewritten source, and the two are checked equivalent with the SMT verifier. A stale entry, a changed signature, or a `-march` without the instructions the entry needs keeps the C;
+  - **keeps the C if any loop stops auto-vectorizing** (compiler vectorization remarks with and without the substitution);
+  - reports every decision on stderr, caches it (`~/.cache/oqed/cc`), and on any internal error compiles the original command unchanged.
+
+  On `projects/stb_image`, `make compare` builds with and without `oqed.lock` (`stbi__high_bit` → `lzcnt`) and checks the decoded pixels are identical.
 
 ## Quick start
 
@@ -44,6 +49,8 @@ uv run oqed search clz_smear_u32 --volume spark --max-usd 5   # standard Spark, 
 uv run oqed search parity_u32 --volume spark-open
 uv run oqed try round_up_pow2_u32 my.s    # check a hand-written candidate
 uv run oqed inline-bench <run-id>         # re-measure a run's winners inlined into loops, re-prove compiled bytes
+uv run oqed optimize --from-run <run-id>  # write the run's proven winners to oqed.lock
+make CC=oqed-cc                            # build with oqed.lock applied (from a uv shell, or CC="uv run oqed-cc")
 uv run oqed baseline round_up_pow2_u32    # clang/gcc output + llvm-mca estimates
 uv run oqed scout                         # baseline table for every target
 uv run oqed fake-run                      # synthetic run log for UI development

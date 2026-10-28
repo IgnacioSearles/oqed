@@ -30,6 +30,7 @@ oqed-harness = { path = "harness", editable = false }
 
 [project.scripts]
 oqed = "oqed.cli:main"
+oqed-cc = "oqed.cc:main"
 
 [tool.ruff]
 line-length = 110

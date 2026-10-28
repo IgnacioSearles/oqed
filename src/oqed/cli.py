@@ -232,5 +232,77 @@ def inline_bench(
         )
 
 
+@app.command()
+def optimize(
+    targets: list[str] = typer.Argument(None, help="benchmark names (default: every function in --from-run)"),
+    from_run: str = typer.Option(None, help="take winners from this run (id or path) instead of searching"),
+    lock_path: Path = typer.Option(Path("oqed.lock"), "--lock", help="lock file to write or update"),
+    max_usd: float = typer.Option(1.0, help="spending cap when searching"),
+):
+    """Write proven winners to oqed.lock for oqed-cc. Searches first unless --from-run is given."""
+    import asyncio
+    import json
+
+    from . import lock
+    from .events import RUNS_DIR
+
+    if from_run is None:
+        if not targets:
+            raise typer.BadParameter("give benchmark names to search, or --from-run")
+        from .providers import get_provider
+        from .search import SearchConfig, run_search
+
+        from_run = asyncio.run(
+            run_search(
+                [load_target(n) for n in targets],
+                get_provider("spark-contributor"),
+                get_provider("wonder"),
+                SearchConfig(max_usd=max_usd),
+                on_event=_print_event,
+            )
+        )
+    path = Path(from_run) if from_run.endswith(".jsonl") else RUNS_DIR / f"{from_run}.jsonl"
+    if not path.exists():
+        path = RUNS_DIR / "demo" / path.name
+    events = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    config = next(e["config"] for e in events if e["type"] == "run_started")
+    if config.get("bench", "call") != "inline":
+        typer.secho("note: this run measured through call/ret; speedups are not inlined numbers", fg="yellow")
+    asm = {e["candidate_id"]: e["asm"] for e in events if e["type"] == "candidate_proposed"}
+    status = {e["candidate_id"]: e["status"] for e in events if e["type"] == "candidate_verified"}
+    bench = {e["candidate_id"]: e for e in events if e["type"] == "candidate_benchmarked"}
+    best: dict[str, str] = {}
+    for e in events:
+        if e["type"] == "new_best":
+            best[e["function_id"]] = e["candidate_id"]  # the last new best is the incumbent
+
+    new = []
+    for fid, cid in best.items():
+        if targets and fid not in targets:
+            continue
+        if status.get(cid) != "proven":
+            typer.echo(f"{fid}: skipped, best candidate is {status.get(cid, 'unverified')}")
+            continue
+        t, b = load_target(fid), bench[cid]
+        new.append(
+            lock.LockEntry(
+                function=t.function,
+                args=t.args,
+                ret=t.ret,
+                march=config.get("march", DEFAULT_MARCH),
+                asm=asm[cid],
+                status="proven",
+                speedup=round(min(b["speedup_vs_clang"], b["speedup_vs_gcc"]), 2),
+                benchmark=fid,
+                run=path.stem,
+                candidate=cid,
+            )
+        )
+        typer.echo(f"{fid}: {t.function} <- {cid} ({new[-1].speedup}x)")
+    old = lock.load(lock_path) if lock_path.exists() else []
+    lock_path.write_text(lock.dumps(lock.merge(old, new)))
+    typer.echo(f"wrote {len(new)} entries to {lock_path}")
+
+
 def main() -> None:
     app()

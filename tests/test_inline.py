@@ -37,7 +37,7 @@ def test_template_makes_labels_unique_and_rets_jump_to_the_end():
 
 def test_inline_function_binds_arguments_and_clobbers():
     src = inline.inline_function(HIGH_BIT, load_target("stbi_high_bit"), "cand")
-    assert '"=a"(r)' in src and '"D"(va)' in src
+    assert '"=a"(__oqed_r)' in src and '"D"(__oqed_v0)' in src
     assert '"rcx", "cc"' in src
 
 
@@ -45,7 +45,7 @@ def test_written_registers_become_operands_or_clobbers():
     # mulhi takes (a, b) in rdi/rsi: rdi is written (in-out), rdx is a scratch clobber.
     body = "\tmov eax, edi\n\tmul esi\n\tmov edi, edx\n\tmov eax, edi\n\tret\n"
     src = inline.inline_function(body, load_target("mulhi_u32_portable"), "cand")
-    assert '"+D"(va)' in src and '"S"(vb)' in src
+    assert '"+D"(__oqed_v0)' in src and '"S"(__oqed_v1)' in src
     assert '"rdx", "cc"' in src
 
 
