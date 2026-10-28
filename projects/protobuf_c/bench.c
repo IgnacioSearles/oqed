@@ -8,7 +8,8 @@
  * packed batch is unpacked once and checked against the input.
  *
  *   pbc_bench           both timings, size and hash
- *   pbc_bench --check   deterministic output only (size, hash, round trip): oqed's test oracle
+ *   pbc_bench --check   deterministic output only (size, hash, round trip), then the
+ *                       coverage check below: oqed's test oracle
  *   pbc_bench --time    one number, size+pack ns/point: oqed's bench command
  */
 #include <string.h>
@@ -17,6 +18,7 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "cover.pb-c.h"
 #include "telemetry.pb-c.h"
 
 #define N_POINTS 4096
@@ -44,6 +46,67 @@ static int64_t metric_value(void)
 	default:
 		return -(int64_t) (r >> 8 & 0xffff); /* negative gauges */
 	}
+}
+
+/* The coverage check: random `Cover` messages (every field type and label,
+ * edge values, nesting, a oneof, large field numbers) through every packing
+ * entry point and back. Prints hashes of everything packed, so a build that
+ * packs any byte differently prints a different line; exits nonzero on an
+ * inconsistency a single build can see by itself. */
+#define N_COVER 500
+
+static uint64_t fnv(uint64_t h, const uint8_t *p, size_t n)
+{
+	for (size_t i = 0; i < n; i++)
+		h = (h ^ p[i]) * 0x100000001b3u;
+	return h;
+}
+
+static int cover_check(void)
+{
+	static uint8_t buf[1 << 22], again[1 << 22];
+	uint64_t h_pack = 0xcbf29ce484222325u, h_lite = h_pack;
+	size_t total = 0;
+	cover__seed(7);
+	for (int i = 0; i < N_COVER; i++) {
+		cover__arena_reset();
+		Cover m;
+		cover__random(&m, 0);
+		size_t size = protobuf_c_message_get_packed_size(&m.base);
+		if (size > sizeof buf) return fprintf(stderr, "cover %d: too big\n", i), 1;
+		size_t n = protobuf_c_message_pack(&m.base, buf);
+		if (n != size) return fprintf(stderr, "cover %d: packed %zu, size said %zu\n", i, n, size), 1;
+		ProtobufCBufferSimple simple = PROTOBUF_C_BUFFER_SIMPLE_INIT(again);
+		size_t n2 = protobuf_c_message_pack_to_buffer(&m.base, &simple.base);
+		if (n2 != n || simple.len != n || memcmp(simple.data, buf, n))
+			return fprintf(stderr, "cover %d: pack_to_buffer differs\n", i), 1;
+		PROTOBUF_C_BUFFER_SIMPLE_CLEAR(&simple);
+		h_pack = fnv(h_pack, buf, n);
+		total += n;
+
+		/* Unpack and pack again: the same bytes. */
+		ProtobufCMessage *back = protobuf_c_message_unpack(&cover__descriptor, NULL, n, buf);
+		if (!back) return fprintf(stderr, "cover %d: unpack failed\n", i), 1;
+		if (protobuf_c_message_get_packed_size(back) != n || protobuf_c_message_pack(back, again) != n ||
+		    memcmp(again, buf, n))
+			return fprintf(stderr, "cover %d: repack differs\n", i), 1;
+		protobuf_c_message_free_unpacked(back, NULL);
+
+		/* Unpack with a third of the fields unknown, and pack that. */
+		ProtobufCMessage *lite = protobuf_c_message_unpack(&cover_lite__descriptor, NULL, n, buf);
+		if (!lite) return fprintf(stderr, "cover %d: lite unpack failed\n", i), 1;
+		size_t ls = protobuf_c_message_get_packed_size(lite), ln = protobuf_c_message_pack(lite, again);
+		if (ls != ln) return fprintf(stderr, "cover %d: lite packed %zu, size said %zu\n", i, ln, ls), 1;
+		ProtobufCBufferSimple lsimple = PROTOBUF_C_BUFFER_SIMPLE_INIT(buf);
+		if (protobuf_c_message_pack_to_buffer(lite, &lsimple.base) != ln || memcmp(lsimple.data, again, ln))
+			return fprintf(stderr, "cover %d: lite pack_to_buffer differs\n", i), 1;
+		PROTOBUF_C_BUFFER_SIMPLE_CLEAR(&lsimple);
+		h_lite = fnv(h_lite, again, ln);
+		protobuf_c_message_free_unpacked(lite, NULL);
+	}
+	printf("cover: %d messages, %zu bytes, hash %016llx, with unknown fields %016llx\n", N_COVER, total,
+	       (unsigned long long) h_pack, (unsigned long long) h_lite);
+	return 0;
 }
 
 static double now(void)
@@ -113,8 +176,11 @@ int main(int argc, char **argv)
 	uint64_t h = 0xcbf29ce484222325u;
 	for (size_t i = 0; i < size; i++)
 		h = (h ^ buf[i]) * 0x100000001b3u;
-	if (check)
+	if (check) {
 		printf("%zu bytes   hash %016llx   round trip ok\n", size, (unsigned long long) h);
+		free(buf);
+		return cover_check();
+	}
 	else if (time_only)
 		printf("%.3f\n", best_pack * 1e9 / N_POINTS);
 	else

@@ -24,7 +24,8 @@ needed: `telemetry.pb-c.{h,c}` are written by hand in the form it generates.
 Values are mixed the way metrics are: 40% under 128, 30% under 2^20, 20% under
 2^40 and 10% negative. `pbc_bench` reports the best time per point for
 `get_packed_size` and for `get_packed_size` + `pack`, checks a round trip
-through `unpack`, and prints an FNV-1a hash of the packed bytes.
+through `unpack`, and prints an FNV-1a hash of the packed bytes. `--check` also
+runs the coverage check (below).
 
 ## Result (laptop, Zen 3 under WSL2, best of 200, three runs each)
 
@@ -88,9 +89,21 @@ median of 5 runs:
 | gcc | 79.1 | 66.6 (1.19×) | 66.8 (1.18×) |
 
 The tested entries help clang, the compiler the oracle used, and do nothing
-for gcc. The oracle is only as good as `--check`, which packs one message type:
-the encoders are covered, but most of `field_is_zeroish`'s cases (strings,
-bytes, floats) are not exercised by it.
+for gcc.
+
+### The coverage check
+
+`--check` first packed only the telemetry batch (5 field types, proto3 and
+repeated), so most of protobuf-c's packing code never ran under the oracle.
+It now also runs the coverage check (`gen_cover.py` writes `cover.pb-c.{h,c}`):
+500 random `Cover` messages with every scalar type as required, optional,
+proto3 and repeated (packed and unpacked) fields, strings, bytes, a oneof,
+nested and repeated messages, NULL strings and sub-messages, field numbers up
+to 536870911, and values biased to edge cases. Each goes through
+`get_packed_size`, `pack`, `pack_to_buffer`, `unpack` and back, and is unpacked
+again with a third of its fields unknown. The check prints hashes of
+everything packed. Under gcov it runs every line of the packing and sizing
+code except `ASSERT_NOT_REACHED` defaults. It takes 0.16 s.
 
 ### Functions that call others
 
@@ -109,14 +122,21 @@ $0.08 + $0.27):
 | `prefixed_message_pack` | 0.8M | 9 | no win |
 | `protobuf_c_message_pack` | 0.8M | 14 | **1.08×, tested** |
 
-The `protobuf_c_message_pack` winner is the whole field loop rewritten: one
+The `protobuf_c_message_pack` winner rewrote the whole field loop: one
 dispatch on the label per field, calls straight to the per-label packers,
-callee-saved registers instead of the stack. With all 8 entries (median of 4
-runs, ns per point, size + pack):
+callee-saved registers instead of the stack. It passed the old `--check`. The
+coverage check rejects it: with unknown fields, the message packs 16641 bytes
+where its size says 18656. Its unknown-fields loop keeps its counter in `ecx`
+across `call unknown_field_pack`, and `ecx` is caller-saved. The old test had
+no unknown fields. It is out of the lock. The three varint encoders pass the
+coverage check with both compilers.
 
-| compiler | plain | all entries |
+The lock now has 7 entries: 4 proven, 3 tested. Size + pack, ns per point,
+median of 3 runs:
+
+| compiler | plain | oqed.lock |
 |---|---|---|
-| clang | 75.6 | **57.8 (1.31×)** |
-| gcc | 80.8 | **67.1 (1.20×)** |
+| clang | 73.8 | **61.2 (1.21×)** |
+| gcc | 78.8 | **67.5 (1.17×)** |
 
-`make compare` (and `make compare CC=gcc`): packed bytes identical.
+`--check` prints the same with and without the lock, under both compilers.

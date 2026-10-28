@@ -9,8 +9,8 @@ endif
 OQED_CC ?= uv run oqed-cc
 CFLAGS ?= -O3 -march=x86-64-v3
 
-SRC = bench.c protobuf-c.c telemetry.pb-c.c
-HDR = protobuf-c.h telemetry.pb-c.h
+SRC = bench.c protobuf-c.c telemetry.pb-c.c cover.pb-c.c
+HDR = protobuf-c.h telemetry.pb-c.h cover.pb-c.h
 
 bench: pbc_bench
 	./pbc_bench
