@@ -92,5 +92,31 @@ for gcc. The oracle is only as good as `--check`, which packs one message type:
 the encoders are covered, but most of `field_is_zeroish`'s cases (strings,
 bytes, floats) are not exercised by it.
 
-The hottest functions oqed still can't search call other functions
-(`required_field_pack` calls `memcpy` and `protobuf_c_message_pack`).
+### Functions that call others
+
+With whole-function substitution (a candidate that uses the stack or calls
+other functions replaces the function as a `naked` one), 67 of the 96
+functions are in scope. Two capped runs searched the hottest of them
+(`oqed optimize --unsafe`, waves: 6 candidates, more only while improving;
+$0.08 + $0.27):
+
+| function | calls | candidates | result |
+|---|---|---|---|
+| `unlabeled_field_get_packed_size` | 8.2M | 6 | no win |
+| `required_field_get_packed_size` | 6.8M | 9 | no win |
+| `required_field_pack` | 4.2M | 6 | no win |
+| `unlabeled_field_pack` | 4.1M | 9 | no win |
+| `prefixed_message_pack` | 0.8M | 9 | no win |
+| `protobuf_c_message_pack` | 0.8M | 14 | **1.08×, tested** |
+
+The `protobuf_c_message_pack` winner is the whole field loop rewritten: one
+dispatch on the label per field, calls straight to the per-label packers,
+callee-saved registers instead of the stack. With all 8 entries (median of 4
+runs, ns per point, size + pack):
+
+| compiler | plain | all entries |
+|---|---|---|
+| clang | 75.6 | **57.8 (1.31×)** |
+| gcc | 80.8 | **67.1 (1.20×)** |
+
+`make compare` (and `make compare CC=gcc`): packed bytes identical.

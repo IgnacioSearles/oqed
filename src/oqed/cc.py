@@ -37,6 +37,7 @@ logs each compile command to `<dir>/commands.jsonl`, builds with
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -254,6 +255,28 @@ def rewrite(text: bytes, subs: list[Substitution]) -> bytes:
     return text
 
 
+_MARKER = re.compile(rb'^# (\d+) "([^"]*)"', re.M)
+
+
+def _source_lines(text: bytes, d: Definition) -> set[tuple[str, int]]:
+    """(file, line) of every source line the definition spans, as compiler
+    remarks name them (through the preprocessed file's line markers)."""
+    a, b = d.start, d.body[1]
+    marks = [m for m in _MARKER.finditer(text, 0, b)]
+    out: set[tuple[str, int]] = set()
+    pos, file, line = 0, "", 1
+    for m in marks + [None]:
+        end = m.start() if m else b
+        if end > a:
+            first = line + text[pos : max(a, pos)].count(b"\n")
+            last = line + text[pos:end].count(b"\n")
+            out |= {(file, n) for n in range(first, last + 1)}
+        if m is None:
+            break
+        pos, line, file = text.index(b"\n", m.start()) + 1, int(m.group(1)), m.group(2).decode()
+    return out
+
+
 def _wrapper(d: Definition) -> str:
     params = ", ".join(f"{t} __oqed_p{i}" for i, t in enumerate(d.param_types))
     call = ", ".join(f"__oqed_p{i}" for i in range(len(d.params)))
@@ -331,14 +354,17 @@ def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> tuple[
     return "kept", why
 
 
-def _slice_sha(ipath: Path, function: str, root: Path) -> str | None:
+def _slice_sha(cc: str, cmd: Command, src: str, ipath: Path, function: str, root: Path) -> str | None:
     """The same hash `oqed scan` records for a function: its definition and
-    the project declarations it uses, as sliced from the preprocessed file."""
+    the project declarations it uses, as clang preprocesses the file."""
     from . import project
 
-    unit = project._Unit(ipath, Path.cwd())
-    d = unit.defs.get(function)
-    return None if d is None else project.slice_sha(project.slice_source(unit, d, root.resolve())[0])
+    unit = (
+        project._Unit(ipath, Path.cwd())
+        if _is_clang(cc)
+        else project.clang_unit(cmd.flags, src, Path.cwd(), ipath.with_suffix(".clang.i"))
+    )
+    return project.source_sha(unit, function, root)
 
 
 def _cache_dir() -> Path:
@@ -361,7 +387,9 @@ def process_source(cc: str, cmd: Command, src: str, entries: list[lock.LockEntry
         return None
 
     key = hashlib.sha256()
-    for part in (text, _run([cc, "--version"]).stdout.encode(), json.dumps(cmd.flags).encode()):
+    # oqed's own code too: a fixed oqed must not reuse an old decision.
+    ours = b"".join(f.read_bytes() for f in sorted(Path(__file__).parent.glob("*.py")))
+    for part in (text, ours, _run([cc, "--version"]).stdout.encode(), json.dumps(cmd.flags).encode()):
         key.update(part)
     for e in wanted:
         key.update(e.model_dump_json().encode())
@@ -434,7 +462,7 @@ def _decide(
     for s in subs:
         if s.entry.oracle != "project":
             harness_subs.append(s)
-        elif _slice_sha(ipath, s.entry.function, root) == s.entry.slice_sha:
+        elif _slice_sha(cc, cmd, src, ipath, s.entry.function, root) == s.entry.slice_sha:
             unsafe[s.entry.function] = "tested with the project's test command, source unchanged since"
         else:
             notes.append(f"{src}: {s.entry.function}: kept C (source changed since it was tested)")
@@ -445,8 +473,17 @@ def _decide(
     remark_flags = ["-Rpass=loop-vectorize"] if _is_clang(cc) else ["-fopt-info-vec-optimized"]
     wrappers = "".join(_wrapper(s.definition) for s in subs).encode()
 
+    # These compiles emit Intel syntax (`_compile_s`), so whole-function
+    # substitutions must hand the assembler back in Intel syntax.
+    intel = {
+        s.entry.function: dataclasses.replace(s, build=dataclasses.replace(build, intel=True))
+        for s in subs
+        if s.function
+    }
+
     def compile_variant(tag: str, chosen: list[Substitution]) -> Compiled:
         p = work / f"{Path(src).stem}.{tag}.i"
+        chosen = [intel.get(s.entry.function, s) for s in chosen]
         p.write_bytes(rewrite(text, chosen) + wrappers)
         return _compile_s(cc, cmd.flags, remark_flags, p)
 
@@ -467,6 +504,10 @@ def _decide(
         rewritten = compile_variant("proven", proven)
     subs = proven
 
+    # Loops inside the substituted functions are replaced along with them;
+    # only loops elsewhere (callers the code is inlined into) count.
+    inside = set().union(*(_source_lines(text, s.definition) for s in subs))
+    original.vectorized -= inside
     if subs and original.vectorized - rewritten.vectorized:
         keep = []
         for s in subs:

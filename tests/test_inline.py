@@ -68,9 +68,10 @@ def test_wrong_candidate_fails_the_in_program_check():
         inline.measure("\tmov eax, edi\n\tret\n", load_target("abs32"), "clang", "x86-64-v3")
 
 
-def test_numeric_local_labels_are_left_alone():
+def test_numeric_local_labels_become_named():
+    # `1f` would be read as a binary number by clang's Intel-syntax parser.
     body = "\ttest edi, -2\n\tjz 1f\n\tpopcnt eax, edi\n\tand eax, 1\n\tret\n1:\n\tmov eax, edi\n\tret\n"
     tpl = inline._template(body)
-    assert "jz 1f" in tpl and "and eax, 1\\n" in tpl and "\t1:\\n" in tpl
+    assert "jz oqed_n0_%=" in tpl and "and eax, 1\\n" in tpl and "\toqed_n0_%=:\\n" in tpl
     r = inline.measure(body, load_target("parity_u32"), "clang", "x86-64-v3")
     assert r.dep_cand.median > 0

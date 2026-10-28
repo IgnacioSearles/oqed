@@ -108,6 +108,7 @@ int main(int argc, char **argv) { printf("%d %d\\n", pc(0xF0F0u + argc), pc(argc
 
 
 ORACLE_LIB = """
+#include <assert.h>
 #include <stdint.h>
 uint32_t load_le32(const uint8_t *p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -115,6 +116,7 @@ uint32_t load_le32(const uint8_t *p) {
 __attribute__((noinline)) static uint32_t mix(uint32_t x) { return x * 0x9e3779b1u ^ (x >> 15); }
 uint32_t sum_mixed(const uint32_t *p, int n) {
     uint32_t s = 0;
+    assert(n >= 0);  /* puts the file's path in the code: the slice hash must not depend on it */
     for (int i = 0; i < n; i++) s += mix(p[i]);
     return s;
 }
@@ -222,6 +224,7 @@ def test_project_entry_applies_only_to_the_tested_source(oracle_proj, monkeypatc
 
 # sum_mixed in asm: a loop calling the static helper `mix`, saving the
 # registers it keeps across calls (three pushes also realign the stack).
+# Numeric labels: `1b` is a binary number to clang's Intel-syntax parser.
 SUM_MIXED = """\tpush rbx
 \tpush r12
 \tpush r13
@@ -229,15 +232,15 @@ SUM_MIXED = """\tpush rbx
 \tmov r13d, esi
 \txor ebx, ebx
 \ttest r13d, r13d
-\tjle done
-loop:
+\tjle 2f
+1:
 \tmov edi, dword ptr [r12]
 \tcall mix
 \tadd ebx, eax
 \tadd r12, 4
 \tdec r13d
-\tjnz loop
-done:
+\tjnz 1b
+2:
 \tmov eax, ebx
 \tpop r13
 \tpop r12

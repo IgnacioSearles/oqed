@@ -381,8 +381,31 @@ def _check(target: Target) -> tuple[str | None, bool]:
     return None, reads_globals
 
 
-def slice_sha(src: str) -> str:
-    return hashlib.sha256(" ".join(src.split()).encode()).hexdigest()
+def clang_unit(flags: list[str], src: str, cwd: Path, out: Path) -> _Unit | None:
+    """The source preprocessed by clang with these flags, whatever the build's
+    compiler (gcc's headers expand `assert` and friends differently)."""
+    pre = subprocess.run(
+        ["clang", *flags, "-E", src, "-o", str(out)], cwd=cwd, capture_output=True, check=False
+    )
+    return _Unit(out, cwd) if pre.returncode == 0 else None
+
+
+def source_sha(unit: _Unit | None, function: str, root: Path) -> str | None:
+    """The hash a project-oracle lock entry records: the function's slice as
+    clang preprocesses it. oqed-cc substitutes only while it is unchanged."""
+    d = unit.defs.get(function) if unit else None
+    return None if d is None else slice_sha(slice_source(unit, d, root.resolve())[0], root)  # type: ignore[arg-type]
+
+
+def slice_sha(src: str, root: Path) -> str:
+    """Hash of a slice, the same however the build spells paths: line markers
+    are dropped and the project root (or `./`) is cut from string literals
+    (`assert` puts `__FILE__` in the code; `oqed scan` preprocesses with
+    absolute paths, a build usually with relative ones)."""
+    lines = [ln for ln in src.splitlines() if not re.match(r"#\s*\d+\s", ln)]
+    text = " ".join(" ".join(lines).split())
+    text = re.sub(r'"(?:' + re.escape(str(root.resolve())) + r"/|\./)", '"', text)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def discover(project: Project, rec: Path) -> Scan:
@@ -394,7 +417,7 @@ def discover(project: Project, rec: Path) -> Scan:
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
 
-    seen: dict[tuple[str, int], tuple[_Unit, dict, Path, int]] = {}
+    seen: dict[tuple[str, int], tuple[_Unit, dict, Path, int, _Unit | None]] = {}
     commands = [json.loads(ln) for ln in (rec / "commands.jsonl").read_text().splitlines() if ln.strip()]
     for k, cmd in enumerate(commands):
         for src in cmd["sources"]:
@@ -409,14 +432,19 @@ def discover(project: Project, rec: Path) -> Scan:
             if pre.returncode != 0:
                 continue
             unit = _Unit(ipath, Path(cmd["cwd"]))
+            hashed = unit if "clang" in Path(cmd["cc"]).name else None
             for d in unit.defs.values():
                 file, line = unit.origin(_offset(d))  # type: ignore[arg-type]
                 if project.root in file.parents and (str(file), line) not in seen:
-                    seen[(str(file), line)] = (unit, d, file, line)
+                    if hashed is None:
+                        hashed = clang_unit(
+                            cmd["flags"], src, Path(cmd["cwd"]), work / f"{k}.{Path(src).stem}.clang.i"
+                        )
+                    seen[(str(file), line)] = (unit, d, file, line, hashed)
 
-    names = [d["name"] for _, d, _, _ in seen.values()]
+    names = [d["name"] for _, d, _, _, _ in seen.values()]
     scan = Scan()
-    for unit, d, file, line in seen.values():
+    for unit, d, file, line, hashed in seen.values():
         fn = d["name"]
         name = fn if names.count(fn) == 1 else f"{fn}.{file.stem}"
         f = Function(name, fn, f"{file.relative_to(project.root)}:{line}", calls.get(fn, 0))
@@ -441,7 +469,7 @@ def discover(project: Project, rec: Path) -> Scan:
             "source": f.location,
             "license": "project",
             "project": str(project.root),
-            "slice_sha": slice_sha(src),
+            "slice_sha": source_sha(hashed, fn, project.root),
         }
         if sig.ret_c:
             meta["ret_c"] = sig.ret_c

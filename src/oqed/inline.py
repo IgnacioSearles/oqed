@@ -120,9 +120,33 @@ def _lines(body: str) -> list[str]:
     return [ln.strip() for ln in lines if ln.strip()]
 
 
+def _name_numeric_labels(lines: list[str]) -> list[str]:
+    """Numeric local labels (`1:`, `jb 1b`, `jz 2f`) become named ones, each
+    definition its own name: clang's assembler reads `1b` as a binary number
+    in Intel syntax (`-masm=intel`)."""
+    defs = [
+        (i, m.group(1)) for i, ln in enumerate(lines) if (m := _LABEL_DEF.match(ln)) and m.group(1).isdigit()
+    ]
+    if not defs:
+        return lines
+    out = list(lines)
+    for k, (i, _) in enumerate(defs):
+        out[i] = f"oqed_n{k}:"
+
+    def ref(i: int, m: re.Match) -> str:
+        n, way = m.group(1), m.group(2)
+        if way == "b":
+            ks = [k for k, (j, d) in enumerate(defs) if d == n and j <= i]
+            return f"oqed_n{ks[-1]}" if ks else m.group(0)
+        ks = [k for k, (j, d) in enumerate(defs) if d == n and j > i]
+        return f"oqed_n{ks[0]}" if ks else m.group(0)
+
+    pat = re.compile(r"(?<![\w.$])(\d+)([bf])(?![\w$])")
+    return [ln if _LABEL_DEF.match(ln) else pat.sub(lambda m, i=i: ref(i, m), ln) for i, ln in enumerate(out)]
+
+
 def _rename_labels(lines: list[str], new) -> list[str]:
-    # Numeric local labels (`1:` with `jz 1f`) may repeat, so they work as
-    # they are; only named labels need renaming.
+    lines = _name_numeric_labels(lines)
     labels = {m.group(1) for ln in lines if (m := _LABEL_DEF.match(ln)) and not m.group(1).isdigit()}
     if not labels:
         return lines
