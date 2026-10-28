@@ -48,7 +48,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import inline, lock
+from . import abi, inline, lock
 from .isa import MARCH_FEATURES, isa_violations
 from .targets import IntType, Target
 from .toolchain import ToolError, assemble, extract_function, relocations
@@ -444,9 +444,14 @@ def _decide(
             notes.append(f"{src}: {e.function}: kept C (signature changed since the lock entry)")
             continue
         try:
-            subs.append(Substitution(e, d, build))
+            sub = Substitution(e, d, build)
         except inline.NotInlinable as ex:
             notes.append(f"{src}: {e.function}: kept C (not inlinable: {ex})")
+            continue
+        if sub.function and (bad := abi.violations(e.asm)):
+            notes.append(f"{src}: {e.function}: kept C (breaks the calling convention: {bad[0]})")
+            continue
+        subs.append(sub)
     if not subs:
         return {"kept": [], "notes": notes}
     if os.environ.get("OQED_TRUST"):

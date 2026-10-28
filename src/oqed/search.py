@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
-from . import harness, inline, lock, prompt
+from . import abi, harness, inline, lock, prompt
 from .baseline import compute as compute_baseline
 from .events import (
     RUNS_DIR,
@@ -650,7 +650,13 @@ class FunctionSearch:
         """Judge a candidate with the project oracle: substitute it, build, test, time."""
         t, cfg, o = self.target, self.config, self.oracle
         assert o is not None
-        # Inline asm or a whole function of its own: oqed-cc decides when it substitutes.
+        # Inline asm or a whole function of its own: oqed-cc decides when it
+        # substitutes. A whole function must follow the calling convention,
+        # which the project's tests may not notice it breaking.
+        if inline.needs_function(asm) and (bad := abi.violations(asm)):
+            why = "breaks the calling convention: " + "; ".join(bad[:3])
+            reject("abi", why, asm, expl, tried="breaks the ABI")
+            return
         entry = lock.LockEntry(
             function=t.function,
             args=t.args,

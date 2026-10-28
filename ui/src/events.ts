@@ -6,6 +6,7 @@ export type RejectStage =
   | "duplicate"
   | "assemble"
   | "isa"
+  | "abi"
   | "test"
   | "verify"
   | "estimate"

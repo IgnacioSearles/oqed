@@ -221,6 +221,7 @@ export const FUNNEL: { stage: RejectStage; label: string }[] = [
   { stage: "duplicate", label: "new code" },
   { stage: "assemble", label: "assembles" },
   { stage: "isa", label: "allowed ISA" },
+  { stage: "abi", label: "follows the ABI" },
   { stage: "test", label: "passes tests" },
   { stage: "estimate", label: "llvm-mca sane" },
   { stage: "inline", label: "inlinable" },

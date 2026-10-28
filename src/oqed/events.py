@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 ModelTier = Literal["volume", "reasoning"]
 RejectStage = Literal[
-    "parse", "duplicate", "assemble", "isa", "test", "verify", "estimate", "inline", "benchmark"
+    "parse", "duplicate", "assemble", "isa", "abi", "test", "verify", "estimate", "inline", "benchmark"
 ]
 ProofStatus = Literal["proven", "tested_only"]
 

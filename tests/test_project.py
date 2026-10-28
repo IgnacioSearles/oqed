@@ -278,6 +278,7 @@ def test_functions_that_call_others_are_substituted_whole(oracle_proj, cc):
         assert "sum_mixed: UNSAFE: substituted on testing only" in build(*flags)
         assert run() == want
         # The compiled program calls the asm, and the asm calls mix.
-        dis = subprocess.run(["objdump", "-d", "-M", "intel", "app"], cwd=root, capture_output=True, text=True)
+        objdump = ["objdump", "-d", "-M", "intel", "app"]
+        dis = subprocess.run(objdump, cwd=root, capture_output=True, text=True, check=True)
         body = dis.stdout.split("<sum_mixed>:")[1].split("\n\n")[0]
         assert "call" in body and "<mix" in body
