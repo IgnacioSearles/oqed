@@ -12,3 +12,4 @@ dist/
 # Run logs are local; curated demo runs live in runs/demo/ and are committed.
 runs/*
 !runs/demo/
+.oqed/

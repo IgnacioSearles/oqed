@@ -22,8 +22,17 @@ For each C source in the command line:
    substitution is dropped.
 6. Compile the rewritten preprocessed source with the original command.
 
+Lock entries with status `tested` (written by `oqed optimize --unsafe`) are
+substituted when the proof is inconclusive but differential testing of the
+compiled code passes, with an `UNSAFE` note. A counterexample always keeps
+the C.
+
 Anything unexpected falls back to compiling the original command unchanged;
 oqed-cc never breaks a build. Decisions are reported on stderr.
+
+Record mode (`OQED_RECORD=<dir>`, used by `oqed scan`) substitutes nothing: it
+logs each compile command to `<dir>/commands.jsonl`, builds with
+`-finstrument-functions`, and links in a call counter (`profile_rt.c`).
 """
 
 from __future__ import annotations
@@ -227,12 +236,13 @@ def _is_clang(cc: str) -> bool:
     return "clang" in _run([cc, "--version"]).stdout
 
 
-def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> str | None:
-    """None when equivalent, otherwise the reason it is not proven."""
+def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> tuple[str, str]:
+    """("equivalent" | "unsafe" | "kept", why). `unsafe` means a `tested` entry
+    whose proof was inconclusive passed differential testing instead."""
     import logging
 
     logging.getLogger("angr").setLevel(logging.CRITICAL)  # e.g. "unicornlib.so" missing; not our concern
-    from . import verify
+    from . import harness, verify
 
     d = sub.definition
     name = f"__oqed_check_{d.name}"
@@ -240,7 +250,7 @@ def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> str | 
         ref = assemble(extract_function(original.asm, name))
         new = assemble(extract_function(rewritten.asm, name))
     except ToolError as e:
-        return f"could not extract the compiled check wrapper ({e})"
+        return "kept", f"could not extract the compiled check wrapper ({e})"
     t = Target(
         name=d.name,
         function=name,
@@ -254,7 +264,18 @@ def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> str | 
         path=Path("."),
     )
     r = verify.check_sync(t, ref, new)
-    return None if r.status == "equivalent" else f"proof {r.status}: {r.reason or 'counterexample found'}"
+    if r.status == "equivalent":
+        return "equivalent", ""
+    why = f"proof {r.status}: {r.reason or 'counterexample found'}"
+    if r.status == "unknown" and sub.entry.status == "tested":
+        try:
+            tested = harness.difftest(t, ref, new)
+        except RuntimeError as e:
+            return "kept", f"{why}; could not test ({e})"
+        if tested.passed:
+            return "unsafe", f"{why}; {tested.inputs_tested} test inputs agree"
+        return "kept", f"{why}; testing failed: {tested.reason}"
+    return "kept", why
 
 
 def _cache_dir() -> Path:
@@ -341,12 +362,15 @@ def _decide(
 
     original = compile_variant("orig", [])
     rewritten = compile_variant("all", subs)
-    proven = []
+    proven, unsafe = [], {}
     for s in subs:
-        if why := _prove(s, original, rewritten):
+        verdict, why = _prove(s, original, rewritten)
+        if verdict == "kept":
             notes.append(f"{src}: {s.entry.function}: kept C ({why})")
         else:
             proven.append(s)
+            if verdict == "unsafe":
+                unsafe[s.entry.function] = why
     if proven and len(proven) < len(subs):
         rewritten = compile_variant("proven", proven)
     subs = proven
@@ -367,6 +391,9 @@ def _decide(
 
     opts = " ".join(a for a in cmd.flags if a.startswith(("-O", "-march")))
     for s in subs:
+        if why := unsafe.get(s.entry.function):
+            notes.append(f"{src}: {s.entry.function}: UNSAFE: substituted on testing only ({why})")
+            continue
         notes.append(
             f"{src}: {s.entry.function}: substituted (proven equivalent to this source with "
             f"{Path(cc).name} {opts}; {s.entry.speedup}x inlined latency when found)"
@@ -388,7 +415,34 @@ def main(argv: list[str] | None = None) -> int:
         return subprocess.call(final)
 
 
+PROFILE_RT = Path(__file__).with_name("profile_rt.c")
+
+
+def _record(cc: str, argv: list[str], rec: Path) -> list[str]:
+    """Log the compile, instrument it, and link the call counter into executables."""
+    rec.mkdir(parents=True, exist_ok=True)
+    cmd = parse(argv)
+    if cmd is not None:
+        line = {
+            "cwd": os.getcwd(),
+            "cc": cc,
+            "flags": cmd.flags,
+            "sources": [str(Path(argv[i]).resolve()) for i in cmd.sources],
+        }
+        with open(rec / "commands.jsonl", "a") as f:
+            f.write(json.dumps(line) + "\n")
+    out = [cc, "-finstrument-functions", *argv]
+    if not {"-c", "-S", "-E", "-M", "-MM"} & set(argv):
+        obj = rec / f"profile_rt.{Path(cc).name}.o"
+        if not obj.exists():
+            subprocess.run([cc, "-O2", "-fPIC", "-c", str(PROFILE_RT), "-o", str(obj)], check=True)
+        out.append(str(obj))
+    return out
+
+
 def _plan(cc: str, argv: list[str], work: Path) -> list[str]:
+    if rec := os.environ.get("OQED_RECORD"):
+        return _record(cc, argv, Path(rec))
     cmd = parse(argv)
     path = Path(os.environ["OQED_LOCK"]) if os.environ.get("OQED_LOCK") else lock.find(Path.cwd())
     if cmd is None or path is None:

@@ -232,14 +232,47 @@ def inline_bench(
         )
 
 
+def _print_scan(sc) -> None:
+    targets = sc.targets
+    n = len(sc.functions)
+    typer.echo(f"{n} functions in the project, {len(targets)} oqed can search (most-called first):")
+    typer.echo(f"  {'calls':>12}  function{'':24} location")
+    for f in targets:
+        typer.echo(f"  {f.calls:>12,}  {f.name:<32} {f.location}")
+    hot = [f for f in sc.functions if f.target is None and f.calls][:8]
+    if hot:
+        typer.echo("most-called functions it can't search yet:")
+        for f in hot:
+            typer.echo(f"  {f.calls:>12,}  {f.name:<32} {f.skipped}")
+
+
+@app.command()
+def scan(project_dir: Path = typer.Option(Path("."), "--project", help="directory with oqed.toml")):
+    """Find every function in a project oqed can search, ranked by calls in the workload. Free."""
+    from . import project
+
+    _print_scan(project.scan(project.load(project_dir)))
+
+
+def _target(fid: str):
+    """A benchmark, or a project target from the last `oqed scan` here."""
+    local = Path(".oqed/targets") / fid
+    return load_target(local if local.is_dir() else fid)
+
+
 @app.command()
 def optimize(
-    targets: list[str] = typer.Argument(None, help="benchmark names (default: every function in --from-run)"),
+    targets: list[str] = typer.Argument(None, help="benchmark names (default: this project)"),
     from_run: str = typer.Option(None, help="take winners from this run (id or path) instead of searching"),
     lock_path: Path = typer.Option(Path("oqed.lock"), "--lock", help="lock file to write or update"),
     max_usd: float = typer.Option(1.0, help="spending cap when searching"),
+    unsafe: bool = typer.Option(
+        False, help="also lock winners that passed testing but could not be proven (status `tested`)"
+    ),
+    top: int = typer.Option(None, help="project mode: search only the N most-called functions"),
 ):
-    """Write proven winners to oqed.lock for oqed-cc. Searches first unless --from-run is given."""
+    """Write winners to oqed.lock for oqed-cc. With no names and no --from-run,
+    optimizes the whole project in this directory (see `oqed scan`)."""
     import asyncio
     import json
 
@@ -247,14 +280,22 @@ def optimize(
     from .events import RUNS_DIR
 
     if from_run is None:
-        if not targets:
-            raise typer.BadParameter("give benchmark names to search, or --from-run")
         from .providers import get_provider
         from .search import SearchConfig, run_search
 
+        if targets:
+            chosen = [load_target(n) for n in targets]
+        else:
+            from . import project
+
+            sc = project.scan(project.load(Path(".")))
+            _print_scan(sc)
+            chosen = [load_target(f.target) for f in sc.targets[:top]]
+            if not chosen:
+                raise typer.Exit("nothing to search")
         from_run = asyncio.run(
             run_search(
-                [load_target(n) for n in targets],
+                chosen,
                 get_provider("spark-contributor"),
                 get_provider("wonder"),
                 SearchConfig(max_usd=max_usd),
@@ -280,10 +321,12 @@ def optimize(
     for fid, cid in best.items():
         if targets and fid not in targets:
             continue
-        if status.get(cid) != "proven":
-            typer.echo(f"{fid}: skipped, best candidate is {status.get(cid, 'unverified')}")
+        st = status.get(cid)
+        if st != "proven" and not (unsafe and st == "tested_only"):
+            hint = " (--unsafe locks it)" if st == "tested_only" else ""
+            typer.echo(f"{fid}: skipped, best candidate is {st or 'unverified'}{hint}")
             continue
-        t, b = load_target(fid), bench[cid]
+        t, b = _target(fid), bench[cid]
         new.append(
             lock.LockEntry(
                 function=t.function,
@@ -291,14 +334,15 @@ def optimize(
                 ret=t.ret,
                 march=config.get("march", DEFAULT_MARCH),
                 asm=asm[cid],
-                status="proven",
+                status="proven" if st == "proven" else "tested",
                 speedup=round(min(b["speedup_vs_clang"], b["speedup_vs_gcc"]), 2),
                 benchmark=fid,
                 run=path.stem,
                 candidate=cid,
             )
         )
-        typer.echo(f"{fid}: {t.function} <- {cid} ({new[-1].speedup}x)")
+        flag = "" if st == "proven" else ", UNSAFE: tested only"
+        typer.echo(f"{fid}: {t.function} <- {cid} ({new[-1].speedup}x{flag})")
     old = lock.load(lock_path) if lock_path.exists() else []
     lock_path.write_text(lock.dumps(lock.merge(old, new)))
     typer.echo(f"wrote {len(new)} entries to {lock_path}")

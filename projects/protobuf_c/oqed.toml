@@ -1,0 +1,3 @@
+# oqed scan / oqed optimize: build the workload with $CC (oqed-cc in record mode), then run it.
+build = "make -B pbc_profile"
+run = "./pbc_profile"
