@@ -194,12 +194,17 @@ def test_inlined_speedups_compare_against_c_in_the_same_loop(tmp_path):
     assert min(b.speedup_vs_clang, b.speedup_vs_gcc) > 1.5
 
 
-def test_waves_stop_after_one_wave_when_nothing_beats_the_c(tmp_path):
-    mock = MockProvider([WRONG, GARBAGE], seed=0)
+def test_waves_repair_then_stop_when_nothing_is_correct(tmp_path):
+    volume = MockProvider([WRONG, GARBAGE], seed=0)
+    reasoning = MockProvider([WRONG], seed=0, model="mock-reasoning")
     cfg = SearchConfig(candidates=40)
-    run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
+    run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
-    assert sum(e.type == "candidate_proposed" for e in events) == cfg.first_wave
+    proposed = [e for e in events if e.type == "candidate_proposed"]
+    # Nothing correct: the first wave, then repair waves with the errors shown,
+    # the last one led by the reasoning tier.
+    assert len(proposed) == cfg.first_wave + cfg.repair_waves * cfg.wave
+    assert sum(e.model == "mock-reasoning" for e in proposed) == 1
     stopped = next(e for e in events if e.type == "search_stopped")
     assert "nothing beat the C" in stopped.reason
 
@@ -226,4 +231,6 @@ def test_waves_search_several_functions_at_once(tmp_path):
     run_id = asyncio.run(run_search([T, other], mock, mock, cfg, runs_dir=tmp_path))
     events = read_events(tmp_path / f"{run_id}.jsonl")
     assert list(events[-1].summary) == [T.name, other.name]
-    assert sum(e.type == "candidate_proposed" for e in events) == 2 * cfg.first_wave
+    assert sum(e.type == "candidate_proposed" for e in events) == 2 * (
+        cfg.first_wave + cfg.repair_waves * cfg.wave
+    )

@@ -79,6 +79,10 @@ class SearchConfig:
     first_wave: int = 6
     wave: int = 3
     near_miss_margin: float = 0.03  # no win yet: one more wave only if a candidate came this close
+    # Nothing correct yet (every candidate failed to assemble, broke the ABI or
+    # failed the tests): this many more waves with the errors in the prompt,
+    # the last one led by the reasoning tier.
+    repair_waves: int = 2
     functions_in_parallel: int = 3
     stall_after: int = 8  # evaluated candidates without improvement before calling the reasoning tier
     reasoning_attempts: int = 2  # fruitless reasoning-tier calls before the function counts as converged
@@ -424,7 +428,7 @@ class FunctionSearch:
                 for _ in range(cfg.concurrency):
                     tg.create_task(self.worker())
             return
-        size, waves, escalated = cfg.first_wave, 0, False
+        size, waves, escalated, repairs = cfg.first_wave, 0, False, 0
         while not self.done:
             if self.proposed >= cfg.candidates:
                 self.stop(f"reached the limit of {cfg.candidates} candidates")
@@ -446,6 +450,11 @@ class FunctionSearch:
                 close = self.near and self.near[0].cycles.median <= bar * (1 + cfg.near_miss_margin)
                 if waves == 1 and close:
                     size = cfg.wave
+                    continue
+                if not self.near and repairs < cfg.repair_waves:
+                    repairs += 1
+                    size = cfg.wave
+                    escalated = repairs == cfg.repair_waves and not self.reasoning_unaffordable
                     continue
                 self.stop(f"nothing beat the C in {self.proposed} candidates")
                 return

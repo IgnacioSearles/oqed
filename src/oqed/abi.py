@@ -79,6 +79,11 @@ def _depth(stack: tuple | None) -> int | None:
 def _step(w: _Walk, insn, s: _State, info) -> _State:
     regs = [(_FULL(r.register), r.access) for r in info.used_registers()]
     m = insn.mnemonic
+    # vzeroupper/vzeroall only clear vector registers (iced lists them as read).
+    if m in (iced.Mnemonic.VZEROUPPER, iced.Mnemonic.VZEROALL):
+        regs = [
+            (r, iced.OpAccess.WRITE if m == iced.Mnemonic.VZEROALL else iced.OpAccess.NONE) for r, _ in regs
+        ]
     for reg, acc in regs:
         # Pushing a dead register (to align the stack) reads nothing that matters.
         if acc in _READS and reg in s.dead and reg != _R.RSP and m != iced.Mnemonic.PUSH:

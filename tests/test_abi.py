@@ -77,3 +77,7 @@ def test_calling_convention_violations_are_caught(name):
     body, want = WRONG[name]
     found = abi.violations(body)
     assert any(want in v for v in found), found
+
+
+def test_vzeroupper_after_a_call_reads_nothing():
+    assert abi.violations("\tpush rbx\n\tcall g\n\tvzeroupper\n\tpop rbx\n\tret\n") == []
