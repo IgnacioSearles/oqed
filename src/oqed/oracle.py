@@ -34,7 +34,7 @@ from pathlib import Path
 
 from . import lock
 from .events import Cycles
-from .project import Project, _oqed_cc
+from .project import Project, cc_env
 
 TEST_TIMEOUT_S = 120
 _NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
@@ -89,7 +89,7 @@ class ProjectOracle:
         applied = tree / ".oqed-applied"
         applied.write_text("")
         env = {
-            "CC": f"{_oqed_cc()} --cc={self.project.cc}",
+            **cc_env(self.project),
             "OQED_LOCK": str(tree / lock.LOCK_NAME),
             "OQED_TRUST": "1",
             "OQED_APPLIED": str(applied),
@@ -142,17 +142,7 @@ class ProjectOracle:
         return Verdict(True)
 
     def _number(self, tree: Path) -> float:
-        """One benchmark measurement; lower is better."""
-        p = self.project
-        if p.bench is None:
-            return cpu_ms(p.run, tree)
-        out = _run(p.bench, tree, timeout=TEST_TIMEOUT_S)
-        lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
-        nums = _NUMBER.findall(lines[-1]) if lines and out.returncode == 0 else []
-        if not nums:
-            raise RuntimeError(f"`{p.bench}` printed no number (exit {out.returncode})")
-        x = float(nums[-1])
-        return 1 / x if p.bench_higher_is_better else x
+        return measure(self.project, tree)
 
     def _bench(self, tree: Path) -> tuple[Cycles, Cycles]:
         cand, base = [], []
@@ -182,6 +172,19 @@ class ProjectOracle:
             return v, cand, base
         finally:
             self._trees.put_nowait(tree)
+
+
+def measure(p: Project, tree: Path) -> float:
+    """One benchmark measurement of the build in `tree`; lower is better."""
+    if p.bench is None:
+        return cpu_ms(p.run, tree)
+    out = _run(p.bench, tree, timeout=TEST_TIMEOUT_S)
+    lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    nums = _NUMBER.findall(lines[-1]) if lines and out.returncode == 0 else []
+    if not nums:
+        raise RuntimeError(f"`{p.bench}` printed no number (exit {out.returncode})")
+    x = float(nums[-1])
+    return 1 / x if p.bench_higher_is_better else x
 
 
 def cpu_ms(command: str, cwd: Path) -> float:

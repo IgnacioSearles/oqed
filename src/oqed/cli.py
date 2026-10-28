@@ -259,9 +259,73 @@ def _target(fid: str):
     return load_target(local if local.is_dir() else fid)
 
 
+def project_config() -> str:
+    from .project import CONFIG
+
+    return CONFIG
+
+
+def _is_repo_url(arg: str) -> bool:
+    return arg.startswith(("http://", "https://", "git@", "ssh://", "github.com/"))
+
+
+def _open_project(arg: str) -> Path:
+    """A project directory from a path or a git URL (cloned next to the
+    current directory, or reused if already there)."""
+    if not _is_repo_url(arg):
+        return Path(arg).resolve()
+    url = arg if "://" in arg or arg.startswith("git@") else f"https://{arg}"
+    dest = Path(url.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]).resolve()
+    if dest.exists():
+        typer.echo(f"using {dest} (already cloned)")
+    else:
+        import subprocess
+
+        typer.echo(f"cloning {url} into {dest}")
+        subprocess.run(["git", "clone", "--depth", "1", url, str(dest)], check=True)
+    return dest
+
+
+@app.command()
+def init(
+    path: str = typer.Argument(".", help="project directory or git URL"),
+    model: str = typer.Option(
+        "spark-contributor", help="model that reads the repo and proposes the commands"
+    ),
+    hint: str = typer.Option("", help="anything the model should know (which program to run, ...)"),
+    attempts: int = 4,
+):
+    """Write oqed.toml for a project: the model reads the repo and proposes how
+    to build, run, test and time it; oqed runs each proposal and feeds back
+    what failed."""
+    import asyncio
+
+    from .init import init as do_init
+    from .providers import get_provider
+
+    root = _open_project(path)
+    spent = asyncio.run(do_init(root, get_provider(model), attempts=attempts, hint=hint))
+    typer.secho(f"model spend: ${spent:.3f}", bold=True)
+
+
+@app.command()
+def report(
+    path: str = typer.Argument(".", help="project directory"),
+    runs: int = typer.Option(11, help="benchmark runs per build, alternating"),
+):
+    """Measure oqed.lock on the whole project: plain build vs oqed-cc build,
+    same test result, benchmark medians. Writes .oqed/report.json."""
+    from . import project
+    from .report import report as do_report
+
+    do_report(project.load(Path(path).resolve()), runs=runs)
+
+
 @app.command()
 def optimize(
-    targets: list[str] = typer.Argument(None, help="benchmark names (default: this project)"),
+    targets: list[str] = typer.Argument(
+        None, help="a project (directory or git URL), or benchmark names (default: this directory)"
+    ),
     from_run: str = typer.Option(None, help="take winners from this run (id or path) instead of searching"),
     lock_path: Path = typer.Option(Path("oqed.lock"), "--lock", help="lock file to write or update"),
     max_usd: float = typer.Option(1.0, help="spending cap when searching"),
@@ -272,13 +336,33 @@ def optimize(
         None, help="project mode: search only the N most-called functions not yet in the lock"
     ),
 ):
-    """Write winners to oqed.lock for oqed-cc. With no names and no --from-run,
-    optimizes the whole project in this directory (see `oqed scan`)."""
+    """Write winners to oqed.lock for oqed-cc. Given a project (a directory or
+    a git URL) or nothing, optimizes that whole project: writes oqed.toml with
+    `oqed init` if it has none, scans it, searches its hottest functions, locks
+    the winners and measures the result (`oqed report`)."""
     import asyncio
     import json
+    import os
 
     from . import lock
     from .events import RUNS_DIR
+
+    project_mode = from_run is None and (
+        not targets or (len(targets) == 1 and (_is_repo_url(targets[0]) or Path(targets[0]).is_dir()))
+    )
+    if project_mode and targets:
+        root = _open_project(targets[0])
+        os.chdir(root)
+        targets = []
+        lock_path = root / lock_path.name
+    if project_mode and not Path(project_config()).exists():
+        from .init import init as do_init
+        from .providers import get_provider
+
+        typer.secho("no oqed.toml here: asking the model how to build, run and time this project", bold=True)
+        spent = asyncio.run(do_init(Path(".").resolve(), get_provider("spark-contributor")))
+        typer.secho(f"model spend for oqed init: ${spent:.3f}", bold=True)
+        max_usd -= spent
 
     if from_run is None:
         from .providers import get_provider
@@ -354,6 +438,11 @@ def optimize(
     old = lock.load(lock_path) if lock_path.exists() else []
     lock_path.write_text(lock.dumps(lock.merge(old, new)))
     typer.echo(f"wrote {len(new)} entries to {lock_path}")
+    if project_mode and (old or new):
+        from . import project
+        from .report import report as do_report
+
+        do_report(project.load(Path(".").resolve()))
 
 
 def main() -> None:

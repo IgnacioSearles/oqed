@@ -125,8 +125,24 @@ class Scan:
 
 
 def _oqed_cc() -> str:
-    exe = shutil.which("oqed-cc")
-    return exe if exe else f"{sys.executable} -m oqed.cc"
+    """oqed-cc as one executable path, so any build system takes it as `CC`
+    (CMake and configure scripts don't accept a command with arguments). The
+    compiler it wraps comes from `$OQED_CC` (see `cc_env`)."""
+    exe = Path(sys.executable).parent / "oqed-cc"
+    if exe.is_file():
+        return str(exe)
+    if found := shutil.which("oqed-cc"):
+        return found
+    wrapper = Path.home() / ".cache" / "oqed" / "bin" / "oqed-cc"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m oqed.cc "$@"\n')
+    wrapper.chmod(0o755)
+    return str(wrapper)
+
+
+def cc_env(project: Project) -> dict[str, str]:
+    """Environment for a build that compiles through oqed-cc."""
+    return {"CC": _oqed_cc(), "OQED_CC": project.cc}
 
 
 def _shell(command: str, cwd: Path, env: dict) -> subprocess.CompletedProcess:
@@ -138,7 +154,7 @@ def record(project: Project) -> Path:
     rec = project.state / "record"
     shutil.rmtree(rec, ignore_errors=True)
     rec.mkdir(parents=True)
-    env = {**os.environ, "CC": f"{_oqed_cc()} --cc={project.cc}", "OQED_RECORD": str(rec)}
+    env = {**os.environ, **cc_env(project), "OQED_RECORD": str(rec)}
     b = _shell(project.build, project.root, env)
     if b.returncode != 0:
         raise RuntimeError(f"build failed ({project.build}):\n{(b.stdout + b.stderr)[-2000:]}")
