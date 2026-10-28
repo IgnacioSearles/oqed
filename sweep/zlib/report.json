@@ -1,0 +1,56 @@
+{
+  "project": "zlib",
+  "compiler": "clang",
+  "unit": "CPU ms",
+  "bench": "for i in 1 2; do ./minigzip -9 -c oqe_input.dat > oqe_c.gz; ./minigzip -d -c oqe_c.gz > oqe_d.dat; cmp -s oqe_input.dat oqe_d.dat || exit 1; done",
+  "entries": 1,
+  "proven": 0,
+  "tested": 1,
+  "applied": 1,
+  "notes": [
+    "deflate.c: longest_match: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)"
+  ],
+  "test": "for i in 1 2; do ./minigzip -9 -c oqe_input.dat > oqe_c.gz; ./minigzip -d -c oqe_c.gz > oqe_d.dat; cmp -s oqe_input.dat oqe_d.dat || exit 1; done",
+  "test_output_identical": true,
+  "output_files": 2,
+  "output_files_identical": true,
+  "plain": {
+    "median": 2822.09,
+    "q1": 2799.875,
+    "q3": 2835.34,
+    "runs": [
+      2807.378,
+      2799.875,
+      2842.672,
+      2834.647,
+      2822.09,
+      2795.92,
+      2868.895,
+      2835.34,
+      2833.08,
+      2801.282,
+      2790.488
+    ]
+  },
+  "oqed": {
+    "median": 2750.826,
+    "q1": 2714.631,
+    "q3": 2762.686,
+    "runs": [
+      2713.261,
+      2781.29,
+      2709.886,
+      2768.896,
+      2723.159,
+      2751.857,
+      2750.826,
+      2762.596,
+      2762.686,
+      2715.277,
+      2714.631
+    ]
+  },
+  "speedup": 1.026,
+  "valid": true,
+  "faster_runs": 11
+}
