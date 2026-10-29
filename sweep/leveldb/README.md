@@ -25,7 +25,7 @@ libc (`memcmp`, `memcpy`), malloc and locks.
 **Search.** Muse Spark (contributor) with Muse Wonder on stalls, the 8 hottest
 functions, then `Extend` again after a fix to the acceptance rule: 103
 candidates in those two runs, $2.41 in all including $0.66 on two earlier
-runs stopped for oqed bugs (below). Four entries were accepted; re-checked
+runs stopped for oqed bugs (below). Three entries were accepted; re-checked
 afterwards, one holds up.
 
 | entry | in the search | re-checked alone (11 alternating runs) |
