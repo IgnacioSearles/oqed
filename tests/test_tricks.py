@@ -1,12 +1,13 @@
 import asyncio
 from dataclasses import dataclass
 
+from test_search import GOOD
+
 from oqed import tricks
 from oqed.events import read_events
 from oqed.providers import Completion
 from oqed.search import SearchConfig, run_search
 from oqed.targets import load_target
-from test_search import GOOD
 
 T = load_target("round_up_pow2_u32")
 OTHER = load_target("ceil_log2_u32")

@@ -677,8 +677,11 @@ class FunctionSearch:
             reject("test", res.reason, asm, expl, ce, tried=f"wrong for {_args(ce.args)}" if ce else "wrong")
             return
 
-        est = await asyncio.to_thread(mca, asm, self.target, cfg.mcpu)
-        if est.latency > self.mca_ceiling:
+        try:
+            est = await asyncio.to_thread(mca, asm, self.target, cfg.mcpu)
+        except ToolError:
+            est = None  # llvm-mca can't parse some asm gas takes; the estimate is only a filter
+        if est is not None and est.latency > self.mca_ceiling:
             reject(
                 "estimate",
                 f"llvm-mca latency {est.latency}, far above -O3 (ceiling {self.mca_ceiling})",
@@ -706,8 +709,8 @@ class FunctionSearch:
             CandidateBenchmarked,
             candidate_id=cid,
             cycles=cyc,
-            mca_latency=est.latency,
-            mca_rthroughput=est.rthroughput,
+            mca_latency=est.latency if est else None,
+            mca_rthroughput=est.rthroughput if est else None,
             speedup_vs_clang=round(refs["clang"].median / cyc.median, 3),
             speedup_vs_gcc=round(refs["gcc"].median / cyc.median, 3),
         )
@@ -730,7 +733,7 @@ class FunctionSearch:
             reason = f"proof skipped: not faster than the proven best ({inc.cycles.median:.2f} {self.unit})"
             self.emit(CandidateVerified, candidate_id=cid, status="tested_only", reason=reason)
             self.best[1:] = sorted(
-                [*self.best[1:], _Member(cid, asm, expl, cyc, "tested_only", est.report)],
+                [*self.best[1:], _Member(cid, asm, expl, cyc, "tested_only", est and est.report)],
                 key=lambda b: b.cycles.median,
             )
             del self.best[cfg.population :]
@@ -753,7 +756,7 @@ class FunctionSearch:
             return
         status: ProofStatus = "proven" if v.status == "equivalent" else "tested_only"
         self.emit(CandidateVerified, candidate_id=cid, status=status, reason=v.reason or None)
-        self._accept(_Member(cid, asm, expl, cyc, status, est.report))
+        self._accept(_Member(cid, asm, expl, cyc, status, est and est.report))
 
     async def _evaluate_project(
         self, cid: str, asm: str, expl: str, code: bytes, clock: _Clock, reject

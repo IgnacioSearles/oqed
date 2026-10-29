@@ -270,7 +270,9 @@ def test_candidates_that_do_not_assemble_go_back_with_their_errors(tmp_path):
 def test_project_runs_log_the_scan_after_run_started(tmp_path):
     scanned = {
         "project": "p",
-        "functions": [{"name": T.name, "function": T.function, "location": "a.c:1", "time": 0.5, "searched": True}],
+        "functions": [
+            {"name": T.name, "function": T.function, "location": "a.c:1", "time": 0.5, "searched": True}
+        ],
     }
     mock = MockProvider([GOOD], seed=0)
     cfg = SearchConfig(candidates=1, waves=False, concurrency=1)
@@ -284,5 +286,22 @@ def test_the_first_wave_can_open_with_the_reasoning_tier(tmp_path):
     volume, reasoning = MockProvider([WRONG], seed=0), MockProvider([WRONG], seed=1)
     cfg = SearchConfig(candidates=6, first_wave_reasoning=2, repairs=0)
     run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
-    tiers = [e.model_tier for e in read_events(tmp_path / f"{run_id}.jsonl") if e.type == "candidate_proposed"]
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    tiers = [e.model_tier for e in events if e.type == "candidate_proposed"]
     assert sorted(tiers) == ["reasoning"] * 2 + ["volume"] * 4
+
+
+def test_a_candidate_llvm_mca_cannot_parse_is_still_benchmarked(tmp_path, monkeypatch):
+    from oqed import search
+    from oqed.toolchain import ToolError
+
+    def fail(*_):
+        raise ToolError("llvm-mca failed: invalid operand for instruction")
+
+    monkeypatch.setattr(search, "mca", fail)
+    mock = MockProvider([GOOD], seed=1)
+    cfg = SearchConfig(waves=False, candidates=1, concurrency=1)
+    run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    (bench,) = [e for e in events if e.type == "candidate_benchmarked"]
+    assert bench.mca_latency is None and any(e.type == "new_best" for e in events)
