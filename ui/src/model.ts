@@ -31,6 +31,7 @@ export interface Candidate {
   statusReason?: string | null;
   cycles?: Cycles;
   paired?: number; // speedup over the C build timed alternately with it (project functions)
+  pairedBase?: Cycles; // that C build's numbers (logged since 2026-10-29; older logs: only the ratio)
   mcaLatency?: number | null;
   mcaThroughput?: number | null;
 }
@@ -160,6 +161,7 @@ export function buildRun(events: RunEvent[]): RunView {
         if (c) {
           c.cycles = e.cycles;
           c.paired = e.speedup_vs_clang;
+          if (e.baseline) c.pairedBase = e.baseline;
           c.mcaLatency = e.mca_latency;
           c.mcaThroughput = e.mca_rthroughput;
         }

@@ -102,6 +102,7 @@ export interface CandidateBenchmarked extends Base {
   speedup_vs_clang: number;
   speedup_vs_gcc: number;
   speedup_vs_reference?: number | null;
+  baseline?: Cycles | null; // project benchmark: the C build timed alongside
 }
 
 export interface NewBest extends Base {

@@ -100,6 +100,9 @@ class CandidateBenchmarked(_Event):
     speedup_vs_clang: float
     speedup_vs_gcc: float
     speedup_vs_reference: float | None = None
+    # Project benchmark: the C build timed alternately with the candidate (the
+    # speedups are against it; the whole program drifts during a run).
+    baseline: Cycles | None = None
 
 
 class NewBest(_Event):

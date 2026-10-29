@@ -50,9 +50,26 @@ export function ResultView({ fn, unit }: { fn: FunctionView; unit?: string }) {
     return { cols, oqed, oqedMarks };
   }, [fn, best, faster]);
 
+  // A project function's win is against the C build timed alongside it: the
+  // whole program drifts during a run, so the baseline from the start of the
+  // search isn't comparable. Older logs have only the ratio: the C build's
+  // median follows from it, its spread wasn't logged.
+  const paired = fn.project && best?.cycles && best.paired;
+  const pairedRow: MeasurementRow[] = paired
+    ? [
+        {
+          key: "paired",
+          label: `${faster.name} -O3, timed alongside`,
+          cycles: best.pairedBase ?? { median: best.cycles!.median * best.paired!, spread: Number.NaN },
+          instructions: countInsns(instructionLines(faster.baseline.asm)),
+          speedup: 1,
+        },
+      ]
+    : [];
   const rows: MeasurementRow[] = [
+    ...pairedRow,
     ...listings.cols
-      .filter((c) => c.base.cycles)
+      .filter((c) => c.base.cycles && !paired)
       .map((c) => ({
         key: c.key,
         label: c.title,

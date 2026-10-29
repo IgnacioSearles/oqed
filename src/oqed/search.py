@@ -830,6 +830,7 @@ class FunctionSearch:
             mca_rthroughput=thr,
             speedup_vs_clang=speedup,
             speedup_vs_gcc=speedup,
+            baseline=base,
         )
         # Paired runs: the sign test is the noise check (each series' spread
         # includes the machine's drift, which the pairing cancels), plus the

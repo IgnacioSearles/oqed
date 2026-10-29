@@ -16,7 +16,7 @@ export interface MeasurementRow {
  * the accent color, compilers in neutral gray, whisker = interquartile range. */
 export function LatencyBars({ rows, unit, project = false }: { rows: MeasurementRow[]; unit: string; project?: boolean }) {
   const [hover, setHover] = useState<string | null>(null);
-  const max = Math.max(...rows.map((r) => r.cycles.median + r.cycles.spread / 2)) * 1.05;
+  const max = Math.max(...rows.map((r) => r.cycles.median + (r.cycles.spread || 0) / 2)) * 1.05;
   const pct = (v: number) => `${(v / max) * 100}%`;
 
   return (
@@ -49,7 +49,12 @@ export function LatencyBars({ rows, unit, project = false }: { rows: Measurement
             >
               <td className="px-2.5 py-1.5 whitespace-nowrap">{r.label}</td>
               <td className="px-2.5 py-1.5 text-right">{r.cycles.median.toFixed(2)}</td>
-              <td className="px-2.5 py-1.5 text-right text-ink-3">±{r.cycles.spread.toFixed(2)}</td>
+              <td
+                className="px-2.5 py-1.5 text-right text-ink-3"
+                title={Number.isFinite(r.cycles.spread) ? undefined : "not logged by this run"}
+              >
+                {Number.isFinite(r.cycles.spread) ? `±${r.cycles.spread.toFixed(2)}` : "—"}
+              </td>
               <td className="px-2.5 py-1.5">
                 <div className="relative h-3">
                   <div
