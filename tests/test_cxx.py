@@ -41,13 +41,17 @@ inline int varlen(uint64_t v) {
 }
 size_t total(const Slice& s, uint32_t extra);
 void put(std::string* dst, uint32_t v);
+uint32_t align(uint32_t x);
 }  // namespace demo
 """
 LIB_CC = """#include "lib.h"
 namespace demo {
 namespace {
 uint32_t rot(uint32_t x) { return (x << 13) | (x >> 19); }
+template <int N>
+constexpr uint32_t up(uint32_t x) { return (x + N - 1) & ~uint32_t(N - 1); }
 }  // namespace
+uint32_t align(uint32_t x) { return up<8>(x) ^ up<64>(x >> 3); }
 uint32_t Coder::mix(uint32_t x) const { return rot(x ^ k_) * 0x9e3779b1u; }
 uint32_t hot(uint32_t x) {
   return x < 16 ? x * 3 : (x < 256 ? x * 5 + 1 : (x < 65536 ? x * 7 + 2 : x * 9 + 3));
@@ -72,7 +76,7 @@ int main(int argc, char** argv) {
   std::string out;
   demo::Slice s{"abc", 3};
   for (uint32_t i = 0; i < 20000000; i++) {
-    acc += demo::hot(i * 2654435761u >> (i & 31)) + c.mix(i) + c.has(i) + demo::hot(i, acc);
+    acc += demo::hot(i * 2654435761u >> (i & 31)) + c.mix(i) + c.has(i) + demo::hot(i, acc) + demo::align(i);
     lens += demo::varlen((uint64_t)i * i) + demo::total(s, i & 7);
     if ((i & 1023) == 0) out.clear();
     demo::put(&out, i);
@@ -142,9 +146,19 @@ def cxx(tmp_path_factory):
 
 def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     _, by = cxx
-    assert {"put", "varlen", "demo.hot.1", "demo.hot.2", "mix", "has", "total", "rot", "size", "main"} <= set(
-        by
-    )
+    assert {
+        "put",
+        "varlen",
+        "demo.hot.1",
+        "demo.hot.2",
+        "mix",
+        "has",
+        "total",
+        "rot",
+        "size",
+        "main",
+        "align",
+    } <= set(by)
     assert by["put"].time > 0.05  # sampled by mangled symbol
     # A method takes `this` and reads memory; a reference is a pointer.
     assert by["mix"].oracle == by["has"].oracle == by["put"].oracle == "project"
@@ -157,6 +171,8 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     src = mix.c_source
     assert "class Coder" in src and "namespace {" in src and "rot(uint32_t x)" in src
     assert "__attribute__((used)) uint32_t Coder::mix" in src
+    # A template helper comes whole (a call names its specialization).
+    assert "template <int N>" in load_target(by["align"].target).c_source
     hot2 = load_target(by["demo.hot.2"].target)
     assert hot2.args == ["u32", "u32"] and hot2.qualified == "demo::hot"
 

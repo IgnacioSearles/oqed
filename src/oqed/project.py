@@ -327,10 +327,12 @@ class _Unit:
         # a marker entering a system header (flags 1 and 3) right after one in a
         # project file. Named as included (<math.h>), not by the path found.
         self.system_headers: list[str] = []
+        self._system: list[bool] = []  # per marker: the text after it is a system header
         in_system = False
         for m in re.finditer(rb'^# (\d+) "([^"]*)"([^\n]*)\n', self.text, re.M):
             self.markers.append((m.end(), int(m.group(1)), m.group(2).decode()))
             marks = m.group(3).split()
+            self._system.append(b"3" in marks)
             if b"1" in marks and b"3" in marks and not in_system:
                 name = m.group(2).decode().rsplit("/include/", 1)[-1]
                 if name not in self.system_headers:
@@ -359,6 +361,12 @@ class _Unit:
         self.functions: list[_Fn] = []
         self.decls = list(self._flatten(json.loads(out).get("inner", []), ()))
         self.by_id = {d["id"]: d for d in self.decls}
+        # A call to a template names its specialization, which sits inside the template.
+        for d in self.decls:
+            if d.get("kind") in ("FunctionTemplateDecl", "ClassTemplateDecl"):
+                for x in d.get("inner", []):
+                    if "id" in x and x.get("kind") not in ("TemplateTypeParmDecl", "NonTypeTemplateParmDecl"):
+                        self.by_id.setdefault(x["id"], d)
         self.defs = {f.name: f.decl for f in self.functions if f.cls is None and f.method is None}
         # A definition by the id of any declaration of it (C++ prototypes,
         # in-class declarations of methods defined out of line).
@@ -391,6 +399,11 @@ class _Unit:
                 yield from self._flatten(d.get("inner", []), (*scope, ("extern", d.get("language", "C"))))
                 continue
             if _offset(d) is None or d.get("isImplicit"):
+                continue
+            # System headers (libc, the STL) are most of a C++ unit's AST, and
+            # slices include them instead of copying them: keep only the
+            # typedefs and enums that integer types resolve through.
+            if kind not in ("TypedefDecl", "TypeAliasDecl", "EnumDecl") and self.in_system(_offset(d)):  # type: ignore[arg-type]
                 continue
             self.scope[d["id"]] = scope
             names = [n for n in map(_scope_name, scope) if n]
@@ -434,6 +447,10 @@ class _Unit:
         return next(
             (f for f in self.functions if key in (f.qualified, f.name) and f.qualified == key), None
         ) or next((f for f in self.functions if f.name == key), None)
+
+    def in_system(self, offset: int) -> bool:
+        i = bisect.bisect_right(self._starts, offset) - 1
+        return i >= 0 and self._system[i]
 
     def origin(self, offset: int) -> tuple[Path, int]:
         i = bisect.bisect_right(self._starts, offset) - 1
@@ -776,7 +793,11 @@ def discover(project: Project, rec: Path) -> Scan:
     seen: dict[tuple[str, int, str], tuple[_Unit, _Fn, Path, int, _Unit | None, list[str]]] = {}
     commands = [json.loads(ln) for ln in (rec / "commands.jsonl").read_text().splitlines() if ln.strip()]
     for k, cmd in enumerate(commands):
+        if not Path(cmd["cwd"]).is_dir():
+            continue  # a configure check's scratch compile (CMake try_compile), since deleted
         for src in cmd["sources"]:
+            if not Path(src).is_file():
+                continue
             ipath = work / f"{k}.{Path(src).stem}.i"
             pre = subprocess.run(
                 [cmd["cc"], *cmd["flags"], "-E", src, "-o", str(ipath)],
