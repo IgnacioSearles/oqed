@@ -84,7 +84,7 @@ export function Treemap({
   now: number | null; // playback time: tiles flash when a candidate was just caught
   onOpen: (name: string) => void;
 }) {
-  const [ref, width] = useWidth<HTMLDivElement>();
+  const [ref, width, node] = useWidth<HTMLDivElement>();
   const height = Math.max(320, Math.min(620, width * 0.52));
   const [hover, setHover] = useState<{ cell: Cell; x: number; y: number } | null>(null);
 
@@ -155,7 +155,7 @@ export function Treemap({
               {tall && (
                 <span className="block truncate tabular">
                   {t.state === "won" && t.speedup
-                    ? `${t.speedup.toFixed(2)}×${t.earlier ? " (earlier run)" : ""}`
+                    ? `${t.speedup.toFixed(2)}×${t.view?.best?.status === "proven" ? " ✓ proven" : ""}${t.earlier ? " (earlier run)" : ""}`
                     : t.state === "searching"
                       ? `${t.tried} tried`
                       : t.state === "nowin"
@@ -185,7 +185,7 @@ export function Treemap({
             disabled={!clickable}
             onClick={() => c.cell.kind === "fn" && onOpen(c.cell.tile.fn.name)}
             onMouseMove={(e) => {
-              const box = ref.current!.getBoundingClientRect();
+              const box = node.current!.getBoundingClientRect();
               setHover({ cell: c.cell, x: e.clientX - box.left, y: e.clientY - box.top });
             }}
             className={`absolute overflow-hidden border px-1 py-0.5 text-left text-[11px] leading-tight transition-colors duration-500 ${cls} ${

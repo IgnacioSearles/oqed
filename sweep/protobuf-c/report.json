@@ -1,0 +1,62 @@
+{
+  "project": "protobuf-c",
+  "compiler": "clang",
+  "unit": "ns/point",
+  "bench": "./pbc_profile --time",
+  "entries": 7,
+  "proven": 2,
+  "tested": 5,
+  "applied": 7,
+  "notes": [
+    "protobuf-c.c: get_tag_size: substituted (proven equivalent to this source with clang -O3 -march=x86-64-v3; 1.4x inlined latency when found)",
+    "protobuf-c.c: protobuf_c_message_get_packed_size: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)",
+    "protobuf-c.c: protobuf_c_message_pack: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)",
+    "protobuf-c.c: repeated_field_get_packed_size: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)",
+    "protobuf-c.c: required_field_get_packed_size: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)",
+    "protobuf-c.c: uint64_size: substituted (proven equivalent to this source with clang -O3 -march=x86-64-v3; 3.3x inlined latency when found)",
+    "protobuf-c.c: unlabeled_field_get_packed_size: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)"
+  ],
+  "test": "./pbc_profile --check",
+  "test_output_identical": true,
+  "output_files": 0,
+  "output_files_identical": true,
+  "plain": {
+    "median": 75.094,
+    "q1": 74.84,
+    "q3": 75.83,
+    "runs": [
+      75.094,
+      76.29,
+      75.886,
+      74.957,
+      74.788,
+      74.913,
+      75.83,
+      74.734,
+      75.275,
+      75.573,
+      74.84
+    ]
+  },
+  "oqed": {
+    "median": 59.19,
+    "q1": 59.016,
+    "q3": 59.327,
+    "runs": [
+      59.114,
+      59.016,
+      59.165,
+      59.209,
+      59.327,
+      59.19,
+      58.559,
+      58.938,
+      59.234,
+      59.393,
+      59.588
+    ]
+  },
+  "speedup": 1.269,
+  "valid": true,
+  "faster_runs": 11
+}

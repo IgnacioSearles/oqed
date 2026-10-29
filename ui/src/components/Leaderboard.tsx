@@ -75,7 +75,7 @@ export function RunList({
                   active ? "bg-select font-bold text-ink" : "text-ink-2 hover:bg-panel-head"
                 }`}
               >
-                <span className="tabular">{when}</span>
+                <span className="tabular shrink-0 whitespace-nowrap">{when}</span>
                 <span className="truncate text-ink-3">
                   {r.project ? `${r.project} · ` : ""}
                   {r.functions.length}fn{r.fake ? " synthetic" : r.demo ? " demo" : ""}
