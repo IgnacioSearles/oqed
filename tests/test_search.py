@@ -265,3 +265,16 @@ def test_candidates_that_do_not_assemble_go_back_with_their_errors(tmp_path):
     assert proposed[1].candidate_id == proposed[0].candidate_id + "r"
     assert proposed[1].parent_id == proposed[0].candidate_id
     assert events[-1].summary[T.name].best_candidate_id == proposed[1].candidate_id
+
+
+def test_project_runs_log_the_scan_after_run_started(tmp_path):
+    scanned = {
+        "project": "p",
+        "functions": [{"name": T.name, "function": T.function, "location": "a.c:1", "time": 0.5, "searched": True}],
+    }
+    mock = MockProvider([GOOD], seed=0)
+    cfg = SearchConfig(candidates=1, waves=False, concurrency=1)
+    run_id = asyncio.run(run_search([T], mock, mock, cfg, runs_dir=tmp_path, scanned=scanned))
+    events = read_events(tmp_path / f"{run_id}.jsonl")
+    assert [e.type for e in events[:2]] == ["run_started", "project_scanned"]
+    assert events[1].functions[0].searched
