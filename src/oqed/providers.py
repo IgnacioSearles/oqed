@@ -46,8 +46,15 @@ MODELS: dict[str, ModelSpec] = {
         ),
         ModelSpec("wonder", "muse-wonder-1.0", META_URL, "MODEL_API_KEY", True, 8, (4.0, 20.0)),
         # Baseten docs: Muse Spark Open has no structured output and rejects n > 1.
+        # Price as listed for Baseten (same as Spark 1.3), so the spending cap covers it.
         ModelSpec(
-            "spark-open", "meta-models/muse-spark-open-1026", BASETEN_URL, "BASETEN_API_KEY", False, 16
+            "spark-open",
+            "meta-models/muse-spark-open-1026",
+            BASETEN_URL,
+            "BASETEN_API_KEY",
+            False,
+            16,
+            (1.25, 4.25),
         ),
     ]
 }
