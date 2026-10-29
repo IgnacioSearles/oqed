@@ -1,0 +1,122 @@
+# oqed: the details
+
+Everything the [README](../README.md) leaves out: how each part works, and what each project taught it.
+
+oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C or C++ function, it searches for assembly that runs faster than both `clang -O3` and `gcc -O3`, then formally proves the result equivalent to the original. Meta's Muse models generate candidate rewrites. A pipeline of increasingly strict checks decides which ones survive: assembly, differential testing, SMT equivalence, then benchmarking. Counterexamples from failed candidates go back to the model.
+
+Built for the Meta Global AI Developer Hackathon (Push the Frontier).
+
+**Live UI with the curated runs: [ignaciosearles.github.io/oqed](https://ignaciosearles.github.io/oqed/)**
+
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. Pointed at a whole project with no functions picked, `oqed optimize` makes protobuf-c's size + pack workload 1.269× faster with clang and 1.320× with gcc (7 functions replaced, 2 of them proven; the proven ones alone give 1.171× and 1.125×; on packing workloads the search never saw, 1.10–1.21×, of which a few percent is code layout), zlib 1.172× with clang and 1.145× with gcc (`longest_match`, 88% of its time, rewritten by Muse Wonder), cJSON 1.072×, with identical output in every case (`sweep/`). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+
+## How it works
+
+```
+ C/C++ function ──► clang/gcc -O3 baselines + llvm-mca bottleneck report
+                    │
+                    ▼
+        Muse Spark (volume) / Muse Wonder (reasoning on stalls)
+                    │  candidate assembly + one-line explanation
+                    ▼
+  assemble ─► ISA check ─► differential test ─► llvm-mca ─► inlined latency ─► SMT proof
+                    │  counterexamples fed back to the model
+                    ▼
+        best verified candidates ─► oqed.lock ─► make CC=oqed-cc CXX=oqed-cxx
+```
+
+- **Models:** `muse-spark-1.3` ([Meta Model API](https://dev.meta.ai/docs/overview)) generates most candidates in parallel, and `muse-wonder-1.0` is called with the full search history and the best candidate's bottleneck report when progress stalls. Muse Spark Open (`meta-models/muse-spark-open-1026` on [Baseten](https://docs.baseten.co)) can run the volume tier instead (`--volume spark-open`; it needs `reasoning_effort`, without which it reasons past 32k tokens and never answers). On the 12 held-out functions it won 2 (both proven, lzcnt and a cmov saturate) to contributor Spark's 4 per run, at ~8x the cost ([experiments/spark-open](../experiments/spark-open/README.md)).
+- **Search:** each volume-tier call mutates one parent, drawn from the fastest candidates that beat `-O3` (or, before any do, the correct ones that came closest), and sees a one-line log of every idea already tried. Duplicates are caught on text and on machine code. Calls go out in waves: 6 at first, then 3 at a time mutating the best so far. A function stops after the first wave if nothing beat `-O3` (unless one came within 3%), and otherwise as soon as a wave fails to improve, after one more wave led by the reasoning tier. Up to 3 functions are searched at once, sharing the spending cap and taking turns at the benchmark. `oqed scan` skips functions both compilers already compile to one or two instructions. Every run has a spending cap (`--max-usd`, default $1, list-price estimate from token counts) and logs its model spend.
+- **Trick library:** `oqed tricks` collects every verified win in the run logs into `tricks.jsonl`, and each function's prompt shows the 3 most similar (`--tricks N`). On 12 held-out functions, twice each, it made no measurable difference (8 of 24 searches won with it, 7 without, same spend): the library is small and mostly idioms the model already knows ([experiments/tricks](../experiments/tricks/README.md)).
+- **Correctness first:** "proven equivalent" is claimed only when symbolic execution (angr/VEX) plus Z3 shows the candidate matches the reference for every ABI-valid input: return value at its width, callee-saved registers and stack pointer. Loops (cycles in the control flow; a backward jump to a shared tail is fine), non-stack memory, instructions with undefined results (`bsf`/`bsr` on zero) and solver timeouts give "unknown", shown as **tested, not proven**. SMT counterexamples are replayed on the CPU. `tests/test_verify.py` holds a suite of deliberately wrong rewrites (wrapping shift counts, reading undefined upper register bits, off-by-one, wrong flag, wrong sign extension, clobbered `rbx`, unbalanced stack, a bug on a single input that random testing misses, ...), and none may be proven.
+- **Fair comparison:** candidates may only use instructions available to the baseline `-march` (default `x86-64-v3`). This is enforced by decoding the machine code, since assemblers don't check it.
+- **Honest numbers:** measurements are reported with variance. Microbenchmark speedups are never presented as whole-program speedups.
+- **Inlined latency:** the search measures every candidate as an `asm` statement inside a loop where each result feeds the next call, against the C compiled into the same loop by clang and gcc in the same run (`--bench call` restores call/ret timing). Candidates that touch memory or the stack are rejected as not inlinable. `oqed inline-bench <run>` turns each winner into a GNU `asm` statement (argument registers bound by constraint, exact clobbers from the decoded instructions), times it against the C source inside a dependent loop (latency) and an independent loop (throughput, with and without the compiler's auto-vectorization), and re-proves the bytes the compiler emits around the `asm` statement. Timing through `call`/`ret` adds ~4.7 ticks per call and can rank candidates wrongly: on stb_image, call-mode wins of 1.2–1.4× on `paeth` and `blinn_8x8` came out at 1.00× inlined, and `bitreverse16` went from 1.17× to 0.52×. Real missed-idiom wins were understated instead: re-measured inlined, `clz_smear` went from 2.35× to 6.5×, `parity` from 1.74× to 3.5×, `round_up_pow2` from 2.2× to 2.6×, and stb's `high_bit` (lzcnt) is 4.3×. Against a loop the compiler auto-vectorizes, every one of them loses throughput (0.2–0.97×). The loops replay 65,536 shuffled inputs: with the 1,024 used at first, the branch predictor learned the sequence, and protobuf-c's branchy `uint64_size` timed at ~3 ticks instead of the ~12 it costs when its branches miss.
+- **Whole projects, no hand-picked functions:** a project's `oqed.toml` names a `build` command and a `run` command (its workload); `oqed init` writes it for you: the model reads the repository and proposes the commands, plus any driver program or input generator as files in `oqed_support/` (never searched: speeding up the measuring harness would be cheating), and oqed runs each proposal in a fresh copy and feeds back what failed. `oqed scan` builds the project through oqed-cc in record mode, which logs every compile, adds `-g` and links in a sampling profiler (a 100 µs timer per thread records where each thread is; nothing is instrumented, so the shares are the program's own), runs the workload, and walks clang's AST of every compiled file for function definitions in the project. A function's time is the larger of its symbol's samples (its code plus what was inlined into it) and the samples the debug info attributes to it wherever it was inlined. Each function oqed can search (integer, enum or pointer arguments, up to 12 of them, and an integer, pointer or no result) becomes a target: a slice of the preprocessed source with the typedefs, enums, globals and helpers it uses. `oqed optimize` with no names searches them, most time first, under the spending cap. On lz4 (`lz4 -9` compressing and decompressing a generated file), `scan` puts `LZ4HC_compress_generic_internal` (27% of the time, 8 arguments) and `LZ4HC_Insert` (20%) on top. It also lists the busiest functions oqed can't take yet and why.
+- **Functions that touch memory:** functions that take pointers, return nothing or read globals can't run alone on random inputs, so the project judges them. Each candidate is built into a copy of the project (oqed-cc in trust mode, the asm as an inline block with a `memory` clobber so callers still inline it), the project's `test` command must print exactly what the C build prints, and its `bench` command is timed against a baseline build, alternating runs. On protobuf-c this took 40 of 96 functions in scope (from 10), and found three varint encoders (`uint32_pack`, `tag_pack`, `uint64_pack`) that make the whole size + pack benchmark 1.21× faster with clang (1.17× with gcc) together with the proven entries, and still pass a coverage test of the whole wire format (`projects/protobuf_c`). The project's tests rejected 29 wrong candidates on the way.
+- **Functions that call other functions:** a candidate that needs the stack, calls other functions or tail-calls them can't be an inline block, so oqed-cc substitutes it as the whole function: the definition is marked `naked` (plus `noipa` under gcc, so no interprocedural analysis trusts the asm) and its body is the candidate, a complete System V function. The function keeps its name and linkage, callers call it, and static helpers it calls are kept alive by taking their addresses. Each candidate picks its form; oqed-cc tells them apart by whether the code touches `rsp` or branches to another symbol. On protobuf-c this brings the hot field packing and sizing functions, and `protobuf_c_message_pack` / `get_packed_size` themselves, into scope: 67 of 96 functions.
+- **C++:** `oqed-cxx` (`CXX=oqed-cxx`, wrapping clang++ or g++) does for C++ what oqed-cc does for C, and `oqed scan` takes both in one project. Functions are found by mangled symbol, so overloads and methods of the same name in other classes stay apart, including overloads that look the same once references are pointers (the lock records `qualified = "ns::Class::f"` and `symbol`). Free functions, functions in namespaces (anonymous ones too), header `inline` functions and methods (in-class or out of line; `this` is the first argument) are in scope; references are passed as pointers and `bool` as one byte. A slice keeps the declarations in their namespaces and copies classes whole, and the function keeps its linkage, so its mangled symbol is the project's; the model calls other functions by those symbols. A whole-function substitution that calls out is applied only where no exception can unwind through it (`noexcept`, or `-fno-exceptions` as LevelDB builds): the asm has no unwind tables. Templates themselves are not searched yet; template helpers a function calls are copied into its slice. On LevelDB (CMake, built as it is) the scan finds 717 functions, 222 in scope; the search's one entry that held up, `BytewiseComparatorImpl::Compare` comparing 8 bytes at a time instead of calling `memcmp`, makes the whole driver **1.046x** faster with clang++ (10 of 11 runs, output identical, tested only) and nothing with g++; three other accepted entries didn't hold up when re-checked one by one ([sweep/leveldb](../sweep/leveldb/README.md), $2.41).
+- **`--unsafe`:** by default only proven winners go into the lock. `oqed optimize --unsafe` also locks winners that could not be proven (status `tested`): a reference with a loop, or a function judged by the project's tests. oqed-cc still re-checks them on every build. A register-only entry is re-proven, a counterexample keeps the C, and an inconclusive proof falls back to differential testing. A project-oracle entry applies only while the function and the declarations it uses hash to what was tested. Either way the substitution is reported as `UNSAFE`.
+- **No assembly in your codebase:** `oqed optimize` records proven winners in a reviewable `oqed.lock`, and `oqed-cc` is a drop-in compiler wrapper (`make CC=oqed-cc`, or `CC="oqed-cc --cc=gcc"`) that applies them at build time, with no network calls. For each C file it preprocesses with your flags (so functions in headers are found), locates each lock entry's function with clang's JSON AST, replaces the body with the asm as an inline `asm` statement, and then:
+  - **proves the substitution against your function as it is now**, compiled by your compiler with your flags: a wrapper calling the function is compiled from the original and from the rewritten source, and the two are checked equivalent with the SMT verifier. A stale entry, a changed signature, or a `-march` without the instructions the entry needs keeps the C;
+  - **keeps the C if any loop stops auto-vectorizing** (compiler vectorization remarks with and without the substitution);
+  - reports every decision on stderr, caches it (`~/.cache/oqed/cc`), and on any internal error compiles the original command unchanged.
+
+  `make compare` in a testbed builds with and without `oqed.lock` and checks the output is identical:
+  - **`projects/protobuf_c`** (protobuf-c v1.5.1 packing 4096 telemetry points): `oqed optimize --unsafe` found the 10 functions in scope, searched the 6 the workload calls ($0.32 of contributor calls), and locked 4 proven winners: `get_tag_size`, `uint64_size`, `uint32_size` and `sint64_size`, protobuf-c's varint-length helpers. Both compilers keep them as branch chains; the winners use `lzcnt` and a multiply-shift (1.4–3.6× inlined latency). End to end, `get_packed_size` goes from 30.9 to 20.5 ns per point with clang (1.51×) and from 33.9 to 20.5 with gcc (1.65×). The full size + pack path, which also writes the bytes, goes from 72.7 to 63.2 ns (1.15×) and from 79.6 to 66.4 (1.20×). Packed bytes are identical. The gain comes from mispredicted branches, so it depends on the data: values of mixed magnitude here, while all-small values would see little change.
+  - **`projects/stb_image`**: `stbi__high_bit` → `lzcnt`, decoded pixels identical. Nothing changes measurably because stb only calls it while parsing BMP headers.
+
+## Quick start
+
+Requires Linux x86-64, [uv](https://docs.astral.sh/uv/), a Rust toolchain, clang, gcc, binutils, and `llvm-mca`. `uv sync` builds the Rust harness.
+
+```sh
+uv sync
+cp .env.example .env              # add MODEL_API_KEY (and BASETEN_API_KEY for Muse Spark Open)
+
+uv run oqed search round_up_pow2_u32      # model-guided search (cheap contributor Spark, $1 cap), events in runs/<id>.jsonl
+uv run oqed search clz_smear_u32 --volume spark --max-usd 5   # standard Spark, for demo runs
+uv run oqed search parity_u32 --volume spark-open
+uv run oqed try round_up_pow2_u32 my.s    # check a hand-written candidate
+uv run oqed inline-bench <run-id>         # re-measure a run's winners inlined into loops, re-prove compiled bytes
+uv run oqed optimize --from-run <run-id>  # write the run's proven winners to oqed.lock
+cd myproject && uv run oqed scan          # free: every function oqed can search, ranked by time (needs oqed.toml)
+uv run oqed optimize --unsafe --max-usd 1 # search the project hottest-first; lock proven and tested-only winners
+uv run oqed optimize path/to/repo --unsafe --top 16 --wonder 1 --max-usd 15  # Muse Wonder writes 1 of each first wave
+make CC=oqed-cc                            # build with oqed.lock applied (from a uv shell, or CC="uv run oqed-cc")
+make CXX=oqed-cxx                          # the same for C++ (cmake -DCMAKE_CXX_COMPILER=oqed-cxx)
+uv run oqed baseline round_up_pow2_u32    # clang/gcc output + llvm-mca estimates
+uv run oqed scout                         # baseline table for every target
+uv run oqed fake-run                      # synthetic run log for UI development
+uv run pytest && (cd harness && cargo test)
+```
+
+Set `OQED_BENCH_CPU=<n>` to pin benchmarks to one core.
+
+### UI
+
+```sh
+cd ui && npm install
+npm run dev      # http://localhost:5173, serves every run in runs/ (new runs and live runs appear on their own)
+npm run build    # static site in ui/dist with the curated runs in runs/demo/
+```
+
+Pushes to `main` that touch `ui/` or `runs/demo/` rebuild the hosted site (`.github/workflows/pages.yml`).
+
+Views: **projects** (every project oqed was pointed at: functions in scope, wins, whole-program speedup with its paired runs, spend), **project** (a codebase map of one run: a treemap of the project's functions sized by their share of the CPU samples, lighting up as they are searched and won, with replay; where the time goes, including what is outside the project; the paired whole-program runs; what happened to every candidate), **result** (C source, clang, gcc and oqed's assembly side by side with measurements) and **search** (the funnel, progress chart and candidate feed, with replay).
+
+## Layout
+
+```
+src/oqed/      orchestrator: search loop, providers, prompts, testing, toolchain wrappers, ISA check, events, CLI
+harness/       Rust (PyO3) extension: runs and times candidates in a forked, sandboxed child
+benchmarks/    one directory per target: func.c + meta.toml
+projects/      small real projects for end-to-end checks (protobuf-c packing, stb_image decoding, LevelDB encoding)
+tests/         test suite
+experiments/   reproducible experiments with their run logs (trick library)
+sweep/         real open-source projects: configs, locks, reports
+ui/            web UI (Vite + React + TypeScript + Tailwind), reads runs/*.jsonl
+runs/          JSONL event logs (curated demo runs in runs/demo/)
+```
+
+Each `runs/<run_id>.jsonl` file holds one event per line (`baseline_ready`, `candidate_proposed`, `candidate_rejected`, ...). It is the source of truth for the UI and for replays.
+
+## Benchmark set
+
+30 loop-free integer functions:
+
+- bit tricks from *Hacker's Delight* (abs, sign, averages, power-of-two rounding, parity, bit reversal, ...)
+- "missed idiom" variants that compilers don't recognize (smear + popcount for clz/log2, portable high multiply)
+- clamp and saturating-add primitives modeled on FFmpeg's `av_clip*` / `av_sat_add32`
+- hash finalizers (MurmurHash3 `fmix32`/`fmix64`, xxHash avalanche)
+- six helpers copied from [stb_image](https://github.com/nothings/stb) v2.30 (`stbi_*`: PNG Paeth predictor, JPEG clamp, luma, CMYK blend, zlib bit reversal, BMP high bit), with `projects/stb_image/` as an end-to-end testbed
+- protobuf-c's varint-length helpers (`pbc_uint32_size`, `pbc_uint64_size`), with `projects/protobuf_c/` as an end-to-end testbed
+
+## Credits
+
+- Bit-manipulation targets follow algorithms from Henry S. Warren Jr., *Hacker's Delight* (2nd ed.). The implementations here are our own.
+- `stb_image.h` / `stb_image_write.h` by Sean Barrett (public domain or MIT), vendored unchanged in `projects/stb_image/`.
+- `protobuf-c.c` / `protobuf-c.h` from [protobuf-c](https://github.com/protobuf-c/protobuf-c) v1.5.1 by Dave Benson and the protobuf-c authors (BSD 2-Clause), vendored unchanged in `projects/protobuf_c/`.
+- `fmix32` / `fmix64` are from MurmurHash3 by Austin Appleby (public domain).
+- xxHash avalanche constants come from xxHash by Yann Collet (BSD 2-Clause). The finalizer implementations here are our own.
+- Built on [angr](https://angr.io), [Z3](https://github.com/Z3Prover/z3), [iced-x86](https://github.com/icedland/iced), and LLVM's `llvm-mca`.
