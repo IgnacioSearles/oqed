@@ -1,0 +1,6 @@
+# LevelDB (C++, CMake) on its in-memory Env: oqed_support/driver.cc.
+build = "rm -rf .oqed/build && cmake -S . -B .oqed/build -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_CXX_COMPILER=\"$CXX\" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-march=x86-64-v3' -DLEVELDB_BUILD_TESTS=OFF -DLEVELDB_BUILD_BENCHMARKS=OFF -DLEVELDB_INSTALL=OFF >/dev/null && cmake --build .oqed/build -j8 --target leveldb >/dev/null && $CXX -O3 -march=x86-64-v3 -std=c++17 -I. -Iinclude -I.oqed/build/include -o ldb_driver oqed_support/driver.cc .oqed/build/libleveldb.a -lpthread"
+run = "./ldb_driver"
+test = "./ldb_driver --check"
+bench = "./ldb_driver --time"
+bench_unit = "ns/op"

@@ -1,0 +1,28 @@
+[
+  {
+    "compiler": "clang",
+    "lock": "all",
+    "entries": 1,
+    "applied": 1,
+    "kept_c": [],
+    "plain": 1018.938,
+    "oqed": 974.002,
+    "speedup": 1.046,
+    "faster_runs": 10,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "compiler": "gcc",
+    "lock": "all",
+    "entries": 1,
+    "applied": 1,
+    "kept_c": [],
+    "plain": 1010.944,
+    "oqed": 1018.091,
+    "speedup": 0.993,
+    "faster_runs": 5,
+    "runs": 11,
+    "output_identical": true
+  }
+]

@@ -1,6 +1,6 @@
 # Library sweep
 
-Real C libraries, cloned as they are, set up by `oqed init` (the model writes
+Real C and C++ libraries, cloned as they are, set up by `oqed init` (the model writes
 `oqed.toml`, oqed checks it by running it) and optimized by
 `oqed optimize <dir> --unsafe`. Each directory holds the config and, where
 something was found, the lock and `report.json`: a plain build against an
@@ -12,6 +12,7 @@ oqed-cc build, same test result and output files, 11 alternating runs.
 | zlib | 71747d1 | 3 attempts, $0.003 | `longest_match` (88%) | top 3 | $0.35 | **1.026x**, faster in 11 of 11 runs, outputs identical (1 tested entry) |
 | cJSON | 6d9f244 | 2 attempts, $0.004 | `parse_string` (3%); the library's own code is ~25% of the workload, the rest is libc (`sprintf`/`strtod` for doubles) | top 6 | $0.85 | **1.072x**, faster in 11 of 11 runs, output hash identical (3 tested entries) |
 | libyaml | 90a56d4 | 4 attempts, $0.005 (driver and input generator written as files) | `yaml_parser_fetch_plain_scalar` (19%) | top 8 | $2.43 | no win: 99 candidates, 31 correct but not faster; the hot code is in scanner functions of 300-1,500 instructions |
+| LevelDB (C++, `CXX=oqed-cxx`) | bb74ef7 | hand-written driver | `DecodeEntry` (4.9%); a third of the samples are LevelDB's own code | top 8, then `Extend` again | $2.41 | **1.046x** with clang++, faster in 10 of 11 runs, output identical (1 tested entry, `BytewiseComparatorImpl::Compare`); none with g++ (0.993x). Three other accepted entries didn't hold up when re-checked ([leveldb](leveldb/README.md)) |
 | lz4 | 5e08bd2 | 1 attempt, $0.001 | `LZ4HC_compress_generic_internal` (62%) | none | - | out of reach: the hot code is force-inlined into functions of 4,000-8,600 instructions; what oqed can take is under 5% each |
 
 What the sweep caught along the way:
