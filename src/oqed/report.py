@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import lock
 from .oracle import _run, differing_file, measure, run_test
-from .project import Project, cc_env
+from .project import Project, cc_env, plain_env
 
 
 def _quartiles(xs: list[float]) -> dict:
@@ -48,7 +48,7 @@ def report(project: Project, runs: int = 11, log=print) -> dict:
         (plain / lock.LOCK_NAME).unlink(missing_ok=True)
 
         log(f"[report] building plain ({project.cc}) and with oqed-cc ({len(entries)} lock entries)")
-        b = _run(project.build, plain, {"CC": project.cc})
+        b = _run(project.build, plain, plain_env(project))
         if b.returncode != 0:
             raise RuntimeError(f"plain build failed:\n{(b.stdout + b.stderr)[-2000:]}")
         env = {**cc_env(project), "OQED_LOCK": str(tuned / lock.LOCK_NAME)}

@@ -46,7 +46,9 @@ from .toolchain import (
     ToolError,
     assemble,
     compile_to_asm,
+    compiler_for,
     extract_function,
+    lang_flags,
     relocations,
 )
 
@@ -230,6 +232,8 @@ def asm_body(
         clobbers.append('"memory"')
     template = "{.intel_syntax noprefix\\n|}" + _template(body) + "{.att_syntax prefix\\n|}"
     cast = f"({ret_cast})" if ret_cast else ""
+    if ret_cast and re.sub(r"\bconst\b", "", ret_cast).strip() == "bool":
+        cast = "(bool)(unsigned char)"  # only al is defined, as for any 1-byte result
     ret = "(void)__oqed_r;" if ret_cast == "void" else f"return {cast}__oqed_r;"
     return (
         f"{{ {decls}unsigned long long __oqed_r; "
@@ -307,7 +311,17 @@ __attribute__((noinline)) static void scalar_ref(int passes) {{
     }}
 }}
 """
-    src = target.c_source.replace(f"{target.function}(", "ref(")
+    if target.lang == "c++":
+        # Called through an inline wrapper by its qualified name: renaming it
+        # in a namespace or class would not make a global `ref`.
+        names = [chr(ord("a") + i) for i in range(len(target.args))]
+        params = ", ".join(f"{_C_TYPES[t]} {n}" for t, n in zip(target.args, names, strict=True))
+        src = (
+            f"{target.c_source}\nstatic inline __attribute__((always_inline)) {_C_TYPES[target.ret]} "
+            f"ref({params}) {{ return {target.qualified or target.function}({', '.join(names)}); }}\n"
+        )
+    else:
+        src = target.c_source.replace(f"{target.function}(", "ref(")
     return f"""#define _GNU_SOURCE
 #include <sched.h>
 #include <stdint.h>
@@ -439,9 +453,10 @@ def build(body: str, target: Target, compiler: Compiler, march: str) -> Built:
     happen in parallel while timing runs are serialized."""
     d = Path(tempfile.mkdtemp(prefix="oqed-inline-"))
     try:
-        src = d / "bench.c"
+        src = d / ("bench.cpp" if target.lang == "c++" else "bench.c")
         src.write_text(bench_program(body, target))
-        cmd = [compiler, "-O3", f"-march={march}", "-masm=intel", *_vectorize_flags(compiler)]
+        cmd = [compiler_for(target, compiler), *lang_flags(target), "-O3", f"-march={march}", "-masm=intel"]
+        cmd += _vectorize_flags(compiler)
         cmd += ["-o", str(d / "bench"), str(src)]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode != 0:
@@ -480,7 +495,7 @@ def _loop_vectorized(remarks: str, src: str) -> bool:
     lines = src.splitlines()
     start = next(i for i, ln in enumerate(lines) if "indep_ref(" in ln and "noinline" in ln) + 1
     span = range(start, start + 4)
-    for m in re.finditer(r"bench\.c:(\d+):\d+: (?:remark|optimized)", remarks):
+    for m in re.finditer(r"bench\.c(?:pp)?:(\d+):\d+: (?:remark|optimized)", remarks):
         if int(m.group(1)) in span and "vectoriz" in remarks[m.end() : m.end() + 200]:
             return True
     return False

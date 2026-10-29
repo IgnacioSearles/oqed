@@ -47,10 +47,49 @@ def _run(cmd: list[str], stdin: str | None = None) -> str:
     return proc.stdout
 
 
+def cxx_driver(cc: str) -> str:
+    """The C++ driver of a C compiler: clang -> clang++, gcc-13 -> g++-13."""
+    path = Path(cc)
+    name = path.name
+    if "++" in name:
+        return cc
+    if "clang" in name:
+        name = name.replace("clang", "clang++", 1)
+    elif "gcc" in name:
+        name = name.replace("gcc", "g++", 1)
+    elif name == "cc":
+        name = "c++"
+    return str(path.with_name(name)) if path.parent != Path(".") else name
+
+
+def c_driver(cxx: str) -> str:
+    """The C driver of a C++ compiler: clang++ -> clang, g++ -> gcc."""
+    path = Path(cxx)
+    name = path.name.replace("clang++", "clang").replace("g++", "gcc").replace("c++", "cc")
+    return str(path.with_name(name)) if path.parent != Path(".") else name
+
+
+def lang_flags(target: Target) -> list[str]:
+    return [f"-std={target.std}"] if target.std else []
+
+
+def compiler_for(target: Target, compiler: str) -> str:
+    return cxx_driver(compiler) if target.lang == "c++" else compiler
+
+
 def compile_to_asm(target: Target, compiler: Compiler, march: str = DEFAULT_MARCH) -> str:
     """Compile the target and return just its function body."""
-    out = _run([compiler, *CFLAGS, f"-march={march}", "-S", "-o", "-", str(target.c_file)])
-    body = extract_function(out, target.function)
+    cmd = [compiler_for(target, compiler), *CFLAGS, *lang_flags(target), f"-march={march}"]
+    out = _run([*cmd, "-S", "-o", "-", str(target.c_file)])
+    try:
+        body = extract_function(out, target.sym)
+    except ToolError:
+        # gcc marks a function in an anonymous namespace internal in its
+        # symbol (`_GLOBAL__N_1L3rotEj`); clang doesn't.
+        alt = re.sub(r"(_GLOBAL__N_1)(\d+)", r"\1L\2", target.sym)
+        if alt == target.sym:
+            raise
+        body = extract_function(out, alt)
     return gcc_addresses(body) if compiler == "gcc" else body
 
 

@@ -465,6 +465,7 @@ def optimize(
                 candidate=cid,
                 oracle=t.oracle,
                 slice_sha=t.slice_sha if t.oracle == "project" else None,
+                qualified=t.qualified,
             )
         )
         flag = "" if st == "proven" else ", UNSAFE: tested only"

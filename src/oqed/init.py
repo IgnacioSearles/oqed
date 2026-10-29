@@ -49,10 +49,11 @@ own compiler wrapper, run a workload that exercises the code, and tell whether t
 still behaves the same. You write `oqed.toml` for a project you are shown.
 
 Keys (TOML, all values strings unless noted):
-- build: shell command, run in the project root, that rebuilds ALL of the project's C code \
+- build: shell command, run in the project root, that rebuilds ALL of the project's C and C++ code \
 from scratch and links the workload's program. It must compile with the compiler in the \
-environment variable $CC (e.g. `make clean && make CC="$CC" CFLAGS="-O3 -march=x86-64-v3" prog`, \
-or for CMake `rm -rf .oqed/build && cmake -S . -B .oqed/build -DCMAKE_C_COMPILER="$CC" \
+environment variables $CC and, for C++, $CXX (e.g. `make clean && make CC="$CC" CXX="$CXX" \
+CFLAGS="-O3 -march=x86-64-v3" prog`, or for CMake `rm -rf .oqed/build && cmake -S . -B .oqed/build \
+-DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
 -DCMAKE_BUILD_TYPE=Release && cmake --build .oqed/build -j8`). Use -O3 (or the project's \
 release flags) and -march=x86-64-v3. Prefer static linking of the project's own library \
 into the program, so the program uses the code just built. Build only what the workload \
@@ -205,7 +206,7 @@ def check(root: Path, toml: str, log=print) -> str | None:
     with tempfile.TemporaryDirectory(prefix="oqed-init-") as d:
         fresh = Path(d) / root.name
         _fresh_copy(root, fresh)
-        env = {**os.environ, "CC": p.cc}
+        env = {**os.environ, **proj.plain_env(p)}
         sizes = []
         for _ in range(2):
             b = subprocess.run(

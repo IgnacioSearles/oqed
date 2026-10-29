@@ -1,7 +1,7 @@
 """`oqed.lock`: verified winners for `oqed-cc` to apply at build time.
 
 A reviewable TOML file, meant to be committed next to the code it speeds up.
-Each entry names a C function, the signature the code was proven for, the
+Each entry names a C or C++ function, the signature the code was proven for, the
 `-march` whose instructions it uses, and the assembly. `oqed-cc` re-proves
 every entry against the function as it is in the source being compiled, so a
 stale entry falls back to the C rather than miscompiling.
@@ -39,6 +39,13 @@ class LockEntry(BaseModel):
     # hash of the function and the declarations it uses, against the source.
     oracle: str = "harness"
     slice_sha: str | None = None
+    # C++: `ns::Class::name`, so overloads and same-named methods of other
+    # classes are told apart (with the signature). None in C.
+    qualified: str | None = None
+
+    @property
+    def key(self) -> str:
+        return self.qualified or self.function
 
 
 def _toml_str(s: str) -> str:
@@ -60,6 +67,7 @@ def dumps(entries: list[LockEntry]) -> str:
             "",
             "[[entry]]",
             f"function = {_toml_str(e.function)}",
+            *([f"qualified = {_toml_str(e.qualified)}"] if e.qualified else []),
             f"args = [{', '.join(_toml_str(a) for a in e.args)}]",
             f"ret = {_toml_str(e.ret)}",
             f"march = {_toml_str(e.march)}",
@@ -86,8 +94,8 @@ def load(path: Path) -> list[LockEntry]:
 
 def merge(old: list[LockEntry], new: list[LockEntry]) -> list[LockEntry]:
     """New entries replace old ones for the same function and -march."""
-    keys = {(e.function, e.march) for e in new}
-    return [e for e in old if (e.function, e.march) not in keys] + new
+    keys = {(e.key, e.march) for e in new}
+    return [e for e in old if (e.key, e.march) not in keys] + new
 
 
 def find(start: Path) -> Path | None:

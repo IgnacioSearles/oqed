@@ -1,4 +1,5 @@
-"""Benchmark target definitions: `benchmarks/<name>/func.c` + `meta.toml`."""
+"""Benchmark target definitions: `benchmarks/<name>/func.c` (or `func.cpp`
+for C++) + `meta.toml`."""
 
 from __future__ import annotations
 
@@ -44,10 +45,20 @@ class Target(BaseModel):
     ret_c: str | None = None  # C return type when `ret` stands in for void or a pointer
     project: str | None = None  # project root, for the project oracle
     slice_sha: str | None = None  # hash of func.c's declarations, to spot source changes
+    lang: str = "c"  # "c" or "c++"
+    # C++: the function's symbol (mangled) and qualified name (`ns::Class::f`);
+    # in C both are `function`.
+    symbol: str | None = None
+    qualified: str | None = None
+    std: str | None = None  # the build's -std=, for compiling the slice
 
     @property
     def c_file(self) -> Path:
-        return self.path / "func.c"
+        return self.path / ("func.cpp" if self.lang == "c++" else "func.c")
+
+    @property
+    def sym(self) -> str:
+        return self.symbol or self.function
 
 
 def load_target(name_or_path: str | Path) -> Target:
@@ -58,9 +69,12 @@ def load_target(name_or_path: str | Path) -> Target:
     if len(meta["args"]) > MAX_ARGS and meta.get("oracle") != "project":
         raise ValueError(f"{path.name}: at most {MAX_ARGS} register arguments supported")
     ref = path / "reference.S"
+    cpp = (path / "func.cpp").exists()
+    if cpp:
+        meta.setdefault("lang", "c++")
     return Target(
         name=path.name,
-        c_source=(path / "func.c").read_text(),
+        c_source=(path / ("func.cpp" if cpp else "func.c")).read_text(),
         path=path,
         reference_asm=ref.read_text() if ref.exists() else None,
         **meta,

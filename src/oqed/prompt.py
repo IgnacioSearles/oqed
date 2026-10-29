@@ -98,9 +98,11 @@ def target_context(
     target: Target, baselines: list[BaselineInfo], mca_report: str, latency_note: str = ""
 ) -> str:
     parts = [
-        f"Function to optimize:\n```c\n{target.c_source.strip()}\n```",
+        f"Function to optimize:\n```{'cpp' if target.lang == 'c++' else 'c'}\n{target.c_source.strip()}\n```",
         f"Signature: `{c_signature(target)}`. {_type_notes(target)}",
     ]
+    if target.lang == "c++":
+        parts.append(CPP_NOTE.format(qualified=target.qualified or target.function, symbol=target.sym))
     for b in baselines:
         m = f", measured {b.measured_latency:.2f} TSC ticks" if b.measured_latency else ""
         parts.append(
@@ -112,6 +114,12 @@ def target_context(
         parts.append(latency_note)
     return "\n\n".join(parts)
 
+
+CPP_NOTE = (
+    "This is C++: `{qualified}`, symbol `{symbol}`. A method gets `this` as its first argument "
+    "(rdi) and references arrive as pointers; `bool` is one byte, 0 or 1. Name other functions "
+    "by their mangled symbols as the listings do (`call _ZN...`), never by their C++ names."
+)
 
 # One is picked per volume-tier call so parallel calls explore different directions
 # instead of converging on the same answer.

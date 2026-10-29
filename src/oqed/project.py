@@ -15,9 +15,11 @@ counts), and `bench`, which prints one number, lower is better unless
    say where each one came from).
 3. Keeps leaf functions with 1-4 integer or pointer arguments and an
    integer, pointer or void result. Each becomes a target in
-   `.oqed/targets/<name>/` whose `func.c` is a slice of the preprocessed
-   source: the function plus the project typedefs, structs, enums, constants
-   and helpers it uses. A target is dropped when the slice doesn't compile or
+   `.oqed/targets/<name>/` whose `func.c` (`func.cpp` for C++) is a slice of
+   the preprocessed source: the function plus the project typedefs, structs,
+   enums, constants and helpers it uses. In C++ also the classes, namespaces
+   and out-of-line methods; a method takes `this` as its first argument and a
+   reference is a pointer. A target is dropped when the slice doesn't compile or
    the compiled function calls something. Functions on integers that read no
    global data run in the harness and can be proven (`oracle = "harness"`);
    the rest are judged by the project itself (`oracle = "project"`, see
@@ -39,10 +41,10 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .cc import _INT_TYPES
+from .cc import _INT_TYPES, ast_flags, source_lang
 from .targets import MAX_ARGS as HARNESS_ARGS
 from .targets import IntType, Target, load_target
-from .toolchain import ToolError, compile_to_asm, instruction_lines
+from .toolchain import ToolError, compile_to_asm, cxx_driver, instruction_lines
 
 CONFIG = "oqed.toml"
 STATE = ".oqed"
@@ -50,7 +52,7 @@ _PRELUDE = "".join(
     f"#include <{h}.h>\n" for h in ("stdint", "stddef", "stdbool", "limits", "string", "stdlib", "assert")
 )
 _STORAGE = re.compile(r"\b(static|inline|__inline__|__inline|extern)\b\s*")
-_LOOPS = {"ForStmt", "WhileStmt", "DoStmt", "GotoStmt", "IndirectGotoStmt"}
+_LOOPS = {"ForStmt", "WhileStmt", "DoStmt", "GotoStmt", "IndirectGotoStmt", "CXXForRangeStmt"}
 _GPRS = {f"r{n}" for n in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp")} | {f"r{i}" for i in range(8, 16)}
 _C_KEYWORDS = {"struct", "union", "enum", "const", "volatile", "restrict", "unsigned", "signed"}
 
@@ -80,6 +82,10 @@ class Project:
     @property
     def state(self) -> Path:
         return self.root / STATE
+
+    @property
+    def cxx(self) -> str:
+        return cxx_driver(self.cc)
 
 
 def load(root: Path) -> Project:
@@ -129,25 +135,32 @@ class Scan:
 # --- record build and profile ---------------------------------------------------------
 
 
-def _oqed_cc() -> str:
-    """oqed-cc as one executable path, so any build system takes it as `CC`
-    (CMake and configure scripts don't accept a command with arguments). The
-    compiler it wraps comes from `$OQED_CC` (see `cc_env`)."""
-    exe = Path(sys.executable).parent / "oqed-cc"
+def _oqed_cc(name: str = "oqed-cc") -> str:
+    """oqed-cc (or oqed-cxx) as one executable path, so any build system
+    takes it as `CC` (CMake and configure scripts don't accept a command with
+    arguments). The compiler it wraps comes from `$OQED_CC` / `$OQED_CXX`
+    (see `cc_env`)."""
+    exe = Path(sys.executable).parent / name
     if exe.is_file():
         return str(exe)
-    if found := shutil.which("oqed-cc"):
+    if found := shutil.which(name):
         return found
-    wrapper = Path.home() / ".cache" / "oqed" / "bin" / "oqed-cc"
+    wrapper = Path.home() / ".cache" / "oqed" / "bin" / name
     wrapper.parent.mkdir(parents=True, exist_ok=True)
-    wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m oqed.cc "$@"\n')
+    cxx = "OQED_AS_CXX=1 " if name == "oqed-cxx" else ""
+    wrapper.write_text(f'#!/bin/sh\n{cxx}exec "{sys.executable}" -m oqed.cc "$@"\n')
     wrapper.chmod(0o755)
     return str(wrapper)
 
 
 def cc_env(project: Project) -> dict[str, str]:
-    """Environment for a build that compiles through oqed-cc."""
-    return {"CC": _oqed_cc(), "OQED_CC": project.cc}
+    """Environment for a build that compiles through oqed-cc (C) and oqed-cxx (C++)."""
+    return {"CC": _oqed_cc(), "OQED_CC": project.cc, "CXX": _oqed_cc("oqed-cxx"), "OQED_CXX": project.cxx}
+
+
+def plain_env(project: Project) -> dict[str, str]:
+    """Environment for a build with the plain compilers."""
+    return {"CC": project.cc, "CXX": project.cxx}
 
 
 def _shell(command: str, cwd: Path, env: dict) -> subprocess.CompletedProcess:
@@ -232,7 +245,8 @@ def _innermost(exe: Path, addrs: list[int]) -> list[str | None]:
     if not addrs:
         return []
     out = subprocess.run(
-        ["llvm-symbolizer", f"--obj={exe}", "--inlining", "--output-style=JSON"],
+        # Mangled, like nm's names: C++ overloads stay apart.
+        ["llvm-symbolizer", f"--obj={exe}", "--inlining", "--no-demangle", "--output-style=JSON"],
         input="\n".join(hex(a) for a in addrs),
         capture_output=True,
         text=True,
@@ -277,12 +291,37 @@ def _symbols(exe: Path) -> dict[int, tuple[str, int]]:
 # --- discovery ------------------------------------------------------------------------
 
 
+@dataclass
+class _Fn:
+    """A function definition in a unit: a C function, or in C++ a free
+    function or method (in its class `cls`, or defined out of line)."""
+
+    decl: dict
+    qualified: str  # ns::Class::name (the name in C)
+    cls: dict | None = None  # the class it is defined in, for in-class definitions
+    method: str | None = None  # qualified class of a non-static method
+
+    @property
+    def name(self) -> str:
+        return self.decl["name"]
+
+    @property
+    def symbol(self) -> str:
+        return self.decl.get("mangledName") or self.name
+
+
+def _scope_name(sc: tuple[str, str]) -> str | None:
+    kind, name = sc
+    return None if kind == "extern" else (name or "(anonymous namespace)")
+
+
 class _Unit:
     """One preprocessed translation unit and its AST."""
 
-    def __init__(self, ipath: Path, cwd: Path):
+    def __init__(self, ipath: Path, cwd: Path, lang: str = "c", flags: list[str] = ()):  # type: ignore[assignment]
         self.text = ipath.read_bytes()
         self.cwd = cwd
+        self.lang = lang
         self.markers: list[tuple[int, int, str]] = []  # (offset after the marker line, line, file)
         # System headers the project's own files include, for the slice's prelude:
         # a marker entering a system header (flags 1 and 3) right after one in a
@@ -291,27 +330,48 @@ class _Unit:
         in_system = False
         for m in re.finditer(rb'^# (\d+) "([^"]*)"([^\n]*)\n', self.text, re.M):
             self.markers.append((m.end(), int(m.group(1)), m.group(2).decode()))
-            flags = m.group(3).split()
-            if b"1" in flags and b"3" in flags and not in_system:
+            marks = m.group(3).split()
+            if b"1" in marks and b"3" in marks and not in_system:
                 name = m.group(2).decode().rsplit("/include/", 1)[-1]
                 if name not in self.system_headers:
                     self.system_headers.append(name)
-            in_system = b"3" in flags
+            in_system = b"3" in marks
         self._starts = [m[0] for m in self.markers]
         out = subprocess.run(
-            ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", "-w", "-x", "cpp-output", str(ipath)],
+            [
+                "clang",
+                "-Xclang",
+                "-ast-dump=json",
+                "-fsyntax-only",
+                "-w",
+                *ast_flags(lang, flags),
+                str(ipath),
+            ],
             capture_output=True,
             text=True,
             check=False,
         ).stdout
-        self.decls = [d for d in json.loads(out).get("inner", []) if _offset(d) is not None]
+        # Declarations in namespaces and extern "C" blocks are flattened, each
+        # with the scopes it sits in (`scope`); members of classes point to
+        # their class (`owner`).
+        self.scope: dict[str, tuple[tuple[str, str], ...]] = {}
+        self.owner: dict[str, dict] = {}
+        self.functions: list[_Fn] = []
+        self.decls = list(self._flatten(json.loads(out).get("inner", []), ()))
         self.by_id = {d["id"]: d for d in self.decls}
-        self.defs = {d["name"]: d for d in self.decls if d.get("kind") == "FunctionDecl" and _body(d)}
+        self.defs = {f.name: f.decl for f in self.functions if f.cls is None and f.method is None}
+        # A definition by the id of any declaration of it (C++ prototypes,
+        # in-class declarations of methods defined out of line).
+        self.def_of: dict[str, dict] = {}
+        for f in self.functions:
+            self.def_of[f.decl["id"]] = f.decl
+            if prev := f.decl.get("previousDecl"):
+                self.def_of[prev] = f.decl
         # A name can be a typedef and a struct tag at once (`typedef struct X X;`),
         # and a struct can be declared before it is defined: keep them all.
         self.types: dict[str, list[dict]] = {}
         for d in self.decls:
-            if d.get("kind") in ("TypedefDecl", "RecordDecl", "EnumDecl") and d.get("name"):
+            if d.get("kind") in _TYPE_KINDS and d.get("name"):
                 self.types.setdefault(d["name"], []).append(d)
         self.enum_of = {
             c["id"]: d["id"]
@@ -320,6 +380,60 @@ class _Unit:
             for c in d.get("inner", [])
             if c.get("kind") == "EnumConstantDecl"
         }
+
+    def _flatten(self, nodes: list[dict], scope: tuple, cls_scope: str = ""):
+        for d in nodes:
+            kind = d.get("kind")
+            if kind == "NamespaceDecl":
+                yield from self._flatten(d.get("inner", []), (*scope, ("namespace", d.get("name", ""))))
+                continue
+            if kind == "LinkageSpecDecl":
+                yield from self._flatten(d.get("inner", []), (*scope, ("extern", d.get("language", "C"))))
+                continue
+            if _offset(d) is None or d.get("isImplicit"):
+                continue
+            self.scope[d["id"]] = scope
+            names = [n for n in map(_scope_name, scope) if n]
+            if kind == "CXXRecordDecl" and d.get("completeDefinition"):
+                self._members(d, "::".join([*names, d.get("name", "")]))
+            if (
+                kind in ("FunctionDecl", "CXXMethodDecl")
+                and _body(d)
+                and re.fullmatch(r"\w+", d.get("name", ""))
+            ):
+                q = "::".join([*names, d["name"]])
+                method = None
+                if kind == "CXXMethodDecl":
+                    # Defined out of line: `ns::Class::name`, its class from the qualifier.
+                    q = d.get("__qualified") or q
+                    parent = self.owner.get(d.get("previousDecl", ""))
+                    if parent is not None:
+                        q = self._qualified_member(parent, d["name"])
+                    if d.get("storageClass") != "static":
+                        method = q.rsplit("::", 1)[0]
+                self.functions.append(_Fn(d, q, None, method))
+            yield d
+
+    def _members(self, rec: dict, qualified: str) -> None:
+        rec["__qualified"] = qualified
+        for m in rec.get("inner", []):
+            if m.get("isImplicit"):
+                continue
+            self.owner[m["id"]] = rec
+            if m.get("kind") == "CXXRecordDecl" and m.get("completeDefinition"):
+                self._members(m, f"{qualified}::{m.get('name', '')}")
+            if m.get("kind") == "CXXMethodDecl" and _body(m) and re.fullmatch(r"\w+", m.get("name", "")):
+                method = qualified if m.get("storageClass") != "static" else None
+                self.functions.append(_Fn(m, f"{qualified}::{m['name']}", rec, method))
+
+    def _qualified_member(self, rec: dict, name: str) -> str:
+        return f"{rec.get('__qualified', rec.get('name', ''))}::{name}"
+
+    def find(self, key: str) -> _Fn | None:
+        """A definition by name (C) or qualified name (C++)."""
+        return next(
+            (f for f in self.functions if key in (f.qualified, f.name) and f.qualified == key), None
+        ) or next((f for f in self.functions if f.name == key), None)
 
     def origin(self, offset: int) -> tuple[Path, int]:
         i = bisect.bisect_right(self._starts, offset) - 1
@@ -331,6 +445,9 @@ class _Unit:
     def span(self, d: dict) -> tuple[int, int]:
         end = d["range"]["end"]
         return _offset(d), end["offset"] + end.get("tokLen", 1)  # type: ignore[return-value]
+
+
+_TYPE_KINDS = ("TypedefDecl", "RecordDecl", "EnumDecl", "CXXRecordDecl", "TypeAliasDecl", "ClassTemplateDecl")
 
 
 def _offset(d: dict) -> int | None:
@@ -385,26 +502,30 @@ class Signature:
     ret: IntType  # u64 for pointers and void
     ret_c: str | None = None  # the C return type when `ret` stands in for void or a pointer
     pointers: bool = False
+    bools: bool = False  # a bool argument: only 0 and 1 are valid, so random inputs aren't
 
 
 def _value(unit: _Unit, spelling: str) -> tuple[IntType | None, bool]:
-    """An argument or return type as passed in a register, and whether it is a pointer."""
-    if re.sub(r"\b(const|volatile|restrict|__restrict)\b", "", spelling).rstrip().endswith("*"):
+    """An argument or return type as passed in a register, and whether it is
+    a pointer (or a C++ reference, passed as one)."""
+    if re.sub(r"\b(const|volatile|restrict|__restrict)\b", "", spelling).rstrip().endswith(("*", "&")):
         return "u64", True
     return _resolve(unit, spelling), False
 
 
-def signature(unit: _Unit, d: dict) -> Signature | str:
+def signature(unit: _Unit, d: dict, method: bool = False) -> Signature | str:
     """How the function passes its arguments and result, or why it is out of scope:
     integers or pointers (up to MAX_ARGS; more than 4 only as a whole function under
-    the project oracle), an integer, pointer or no result."""
+    the project oracle), an integer, pointer or no result. A method's `this`
+    is its first argument."""
     t = d["type"]
     if "..." in t["qualType"]:
         return "variadic"
     parms = [x for x in d.get("inner", []) if x.get("kind") == "ParmVarDecl"]
-    if not 1 <= len(parms) <= MAX_ARGS:
-        return f"{len(parms)} arguments"
-    vals = [_value(unit, p["type"].get("desugaredQualType", p["type"]["qualType"])) for p in parms]
+    if not 1 <= len(parms) + method <= MAX_ARGS:
+        return f"{len(parms) + method} arguments"
+    spellings = [p["type"].get("desugaredQualType", p["type"]["qualType"]) for p in parms]
+    vals = [("u64", True)] * method + [_value(unit, sp) for sp in spellings]
     ret_spelling = t["qualType"].split("(")[0].strip()
     if ret_spelling == "void":
         ret, ret_ptr, ret_c = "u64", False, "void"
@@ -413,7 +534,8 @@ def signature(unit: _Unit, d: dict) -> Signature | str:
         ret_c = ret_spelling if ret_ptr else None
     if ret is None or any(a is None for a, _ in vals):
         return f"arguments or result not integers or pointers: {t['qualType']}"
-    return Signature([a for a, _ in vals], ret, ret_c, ret_ptr or any(p for _, p in vals))  # type: ignore[arg-type]
+    bools = any(re.sub(r"\bconst\b", "", sp).strip() == "bool" for sp in spellings)
+    return Signature([a for a, _ in vals], ret, ret_c, ret_ptr or any(p for _, p in vals), bools)  # type: ignore[arg-type]
 
 
 def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
@@ -491,6 +613,85 @@ def slice_source(unit: _Unit, d: dict, root: Path) -> tuple[str, bool]:
     return prelude + "\n" + "\n\n".join(out) + "\n", loops
 
 
+_SYSTEM_CXX = re.compile(r"^(?:[\w-]+/)?c\+\+/[\d.]+/(?:backward/)?")
+
+
+def _wrap(unit: _Unit, x: dict, text: str) -> str:
+    """A declaration's text inside the namespaces and extern "C" blocks it sits in."""
+    for kind, name in reversed(unit.scope.get(x["id"], ())):
+        head = f'extern "{name}"' if kind == "extern" else f"namespace {name}".rstrip()
+        text = f"{head} {{\n{text}\n}}"
+    return text
+
+
+def slice_cxx(unit: _Unit, fn: _Fn, root: Path) -> tuple[str, bool]:
+    """func.cpp for a C++ definition: the project declarations it needs in
+    source order (the order the unit compiled in), each in its namespaces;
+    classes whole, with their members. The function keeps its linkage (so its
+    symbol is the project's) and is marked `used` so it is emitted."""
+    d = fn.decl
+    need: dict[str, dict] = {}
+    loops = False
+    todo = [fn.cls or d, d]
+    while todo:
+        cur = todo.pop()
+        if cur["id"] in need:
+            continue
+        need[cur["id"]] = cur
+        for mid in (cur["id"], cur.get("previousDecl")):  # a member, or a method defined out of line
+            if mid in unit.owner:
+                todo.append(unit.owner[mid])
+        if any(n.get("kind") in _LOOPS for n in _walk(cur)):
+            loops = True
+        for n in _walk(cur):
+            refs = []
+            ref = n.get("referencedDecl")
+            if isinstance(ref, dict) and "id" in ref:
+                refs.append(ref["id"])
+                if ref.get("kind") == "EnumConstantDecl" and ref["id"] in unit.enum_of:
+                    refs.append(unit.enum_of[ref["id"]])
+                if ref.get("kind") in ("FunctionDecl", "CXXMethodDecl") and ref["id"] not in unit.def_of:
+                    todo.extend(t for t in unit.types.get(ref.get("name", ""), []))
+            if isinstance(n.get("referencedMemberDecl"), str):
+                refs.append(n["referencedMemberDecl"])
+            for key in ("ownedTagDecl", "decl"):
+                r = n.get(key)
+                if isinstance(r, dict) and "id" in r:
+                    refs.append(r["id"])
+            for rid in refs:
+                for x in (unit.def_of.get(rid), unit.by_id.get(rid), unit.owner.get(rid)):
+                    if x is not None:
+                        todo.append(x)
+            t = n.get("type")
+            if isinstance(t, dict):
+                for ident in re.findall(r"[A-Za-z_]\w*", t.get("qualType", "")):
+                    if ident not in _C_KEYWORDS:
+                        todo.extend(unit.types.get(ident, []))
+    spans = sorted(
+        (*unit.span(x), x)
+        for x in need.values()
+        if x["id"] in unit.by_id and root in unit.origin(_offset(x))[0].parents  # type: ignore[arg-type]
+    )
+    used = _offset(d)
+    out, last_end = [], -1
+    for a, b, x in spans:
+        if b <= last_end:
+            continue  # inside a declaration already copied (a class's member, the struct in a typedef)
+        text = unit.text[a:b].decode()
+        if a <= used < b:  # the function, or the class it is defined in
+            k = used - a
+            text = text[:k] + "__attribute__((used)) " + text[k:]
+        if not (x.get("kind") in ("FunctionDecl", "CXXMethodDecl") and _body(x)):
+            text += ";"
+        out.append(_wrap(unit, x, text))
+        last_end = b
+    headers = [_SYSTEM_CXX.sub("", h) for h in unit.system_headers]
+    prelude = _PRELUDE + "".join(
+        f"#include <{h}>\n" for h in dict.fromkeys(headers) if f"<{h}>" not in _PRELUDE
+    )
+    return prelude + "\n" + "\n\n".join(out) + "\n", loops
+
+
 # Functions both compilers reduce to this many instructions (plus `ret`) aren't worth a search.
 MINIMAL = 2
 # Past this many instructions (from both compilers) a function is too big to
@@ -530,17 +731,26 @@ def _check(target: Target) -> tuple[str | None, bool]:
 def clang_unit(flags: list[str], src: str, cwd: Path, out: Path) -> _Unit | None:
     """The source preprocessed by clang with these flags, whatever the build's
     compiler (gcc's headers expand `assert` and friends differently)."""
+    lang = source_lang(src)
+    clang = cxx_driver("clang") if lang == "c++" else "clang"
     pre = subprocess.run(
-        ["clang", *flags, "-E", src, "-o", str(out)], cwd=cwd, capture_output=True, check=False
+        [clang, *flags, "-E", src, "-o", str(out)], cwd=cwd, capture_output=True, check=False
     )
-    return _Unit(out, cwd) if pre.returncode == 0 else None
+    return _Unit(out, cwd, lang, flags) if pre.returncode == 0 else None
+
+
+def slice_of(unit: _Unit, fn: _Fn, root: Path) -> tuple[str, bool]:
+    if unit.lang == "c++":
+        return slice_cxx(unit, fn, root)
+    return slice_source(unit, fn.decl, root)
 
 
 def source_sha(unit: _Unit | None, function: str, root: Path) -> str | None:
     """The hash a project-oracle lock entry records: the function's slice as
-    clang preprocesses it. oqed-cc substitutes only while it is unchanged."""
-    d = unit.defs.get(function) if unit else None
-    return None if d is None else slice_sha(slice_source(unit, d, root.resolve())[0], root)  # type: ignore[arg-type]
+    clang preprocesses it (`function`: its name, in C++ its qualified name).
+    oqed-cc substitutes only while it is unchanged."""
+    fn = unit.find(function) if unit else None
+    return None if fn is None else slice_sha(slice_of(unit, fn, root.resolve())[0], root)  # type: ignore[arg-type]
 
 
 def slice_sha(src: str, root: Path) -> str:
@@ -563,7 +773,7 @@ def discover(project: Project, rec: Path) -> Scan:
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
 
-    seen: dict[tuple[str, int], tuple[_Unit, dict, Path, int, _Unit | None]] = {}
+    seen: dict[tuple[str, int, str], tuple[_Unit, _Fn, Path, int, _Unit | None, list[str]]] = {}
     commands = [json.loads(ln) for ln in (rec / "commands.jsonl").read_text().splitlines() if ln.strip()]
     for k, cmd in enumerate(commands):
         for src in cmd["sources"]:
@@ -577,24 +787,39 @@ def discover(project: Project, rec: Path) -> Scan:
             )
             if pre.returncode != 0:
                 continue
-            unit = _Unit(ipath, Path(cmd["cwd"]))
+            unit = _Unit(ipath, Path(cmd["cwd"]), source_lang(src), cmd["flags"])
             hashed = unit if "clang" in Path(cmd["cc"]).name else None
-            for d in unit.defs.values():
-                file, line = unit.origin(_offset(d))  # type: ignore[arg-type]
-                if project.root in file.parents and (str(file), line) not in seen:
+            for fn in unit.functions:
+                file, line = unit.origin(_offset(fn.decl))  # type: ignore[arg-type]
+                if project.root in file.parents and (str(file), line, fn.qualified) not in seen:
                     if hashed is None:
                         hashed = clang_unit(
                             cmd["flags"], src, Path(cmd["cwd"]), work / f"{k}.{Path(src).stem}.clang.i"
                         )
-                    seen[(str(file), line)] = (unit, d, file, line, hashed)
+                    seen[(str(file), line, fn.qualified)] = (unit, fn, file, line, hashed, cmd["flags"])
 
-    names = [d["name"] for _, d, _, _, _ in seen.values()]
+    names = [fn.name for _, fn, _, _, _, _ in seen.values()]
+    qualified = [fn.qualified for _, fn, _, _, _, _ in seen.values()]
+    taken: set[str] = set()
     scan = Scan()
-    for unit, d, file, line, hashed in seen.values():
-        fn = d["name"]
-        name = fn if names.count(fn) == 1 else f"{fn}.{file.stem}"
+    for unit, fnd, file, line, hashed, flags in seen.values():
+        d, fn = fnd.decl, fnd.name
+        # Methods of the same name: the qualified name; overloads: with their
+        # number of arguments; then the file.
+        name = fn if names.count(fn) == 1 else fnd.qualified.replace("::", ".")
+        if name != fn and qualified.count(fnd.qualified) > 1:
+            name += f".{len([x for x in d.get('inner', []) if x.get('kind') == 'ParmVarDecl'])}"
+        if name in taken:
+            name = f"{name}.{file.stem}"
+        while name in taken:
+            name += "_"
+        taken.add(name)
         f = Function(
-            name, fn, f"{file.relative_to(project.root)}:{line}", time.get(fn, 0.0), own.get(fn, 0.0)
+            name,
+            fn,
+            f"{file.relative_to(project.root)}:{line}",
+            time.get(fnd.symbol, 0.0),
+            own.get(fnd.symbol, 0.0),
         )
         scan.functions.append(f)
         if fn == "main":
@@ -603,14 +828,19 @@ def discover(project: Project, rec: Path) -> Scan:
         if file.relative_to(project.root).parts[0] == SUPPORT:
             f.skipped = "oqed init's own driver (measures the project, not part of it)"
             continue
-        sig = signature(unit, d)
+        sig = signature(unit, d, fnd.method is not None)
         if isinstance(sig, str):
             f.skipped = sig
             continue
-        src, loops = slice_source(unit, d, project.root)
+        try:
+            src, loops = slice_of(unit, fnd, project.root)
+        except (KeyError, ValueError) as e:
+            f.skipped = f"could not slice the source: {e}"
+            continue
+        cpp = unit.lang == "c++"
         tdir = targets_dir / name
         tdir.mkdir()
-        (tdir / "func.c").write_text(src)
+        (tdir / ("func.cpp" if cpp else "func.c")).write_text(src)
         meta = {
             "function": fn,
             "category": "project",
@@ -620,11 +850,15 @@ def discover(project: Project, rec: Path) -> Scan:
             "source": f.location,
             "license": "project",
             "project": str(project.root),
-            "slice_sha": source_sha(hashed, fn, project.root),
+            "slice_sha": source_sha(hashed, fnd.qualified if cpp else fn, project.root),
         }
+        if cpp:
+            meta |= {"lang": "c++", "symbol": fnd.symbol, "qualified": fnd.qualified}
+            if std := [a.split("=", 1)[1] for a in flags if a.startswith("-std=")][-1:]:
+                meta["std"] = std[0]
         if sig.ret_c:
             meta["ret_c"] = sig.ret_c
-        if len(sig.args) > HARNESS_ARGS:
+        if len(sig.args) > HARNESS_ARGS or sig.bools:
             meta["oracle"] = "project"  # the harness and inline blocks take 4 register arguments
         (tdir / "meta.toml").write_text(_toml(meta))
         why, reads_globals = _check(load_target(tdir))

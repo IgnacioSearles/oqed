@@ -789,6 +789,7 @@ class FunctionSearch:
             candidate=cid,
             oracle="project",
             slice_sha=t.slice_sha,
+            qualified=t.qualified,
         )
         t0 = time.perf_counter()
         try:

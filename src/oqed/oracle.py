@@ -200,7 +200,7 @@ class ProjectOracle:
         self.expected_files = {f: h for f, h in fa.items() if fb.get(f) == h}
 
     def _check(self, tree: Path, entry: lock.LockEntry) -> Verdict:
-        entries = [e for e in self.entries if e.function != entry.function] + [entry]
+        entries = [e for e in self.entries if e.key != entry.key] + [entry]
         proc, applied = self._build(tree, entries)
         if proc.returncode != 0:
             err = [ln for ln in (proc.stdout + proc.stderr).splitlines() if "error" in ln.lower()]
