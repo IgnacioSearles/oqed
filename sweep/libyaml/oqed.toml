@@ -1,0 +1,2 @@
+build = "sh oqed_support/build.sh"
+run = "./oqed_driver oqed_input.yaml 8"

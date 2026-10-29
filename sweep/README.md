@@ -10,6 +10,7 @@ oqed-cc build, same test result and output files, 11 alternating runs.
 |---|---|---|---|---|---|---|
 | zlib | 71747d1 | 3 attempts, $0.003 | `longest_match` (88%) | top 3 | $0.35 | **1.026x**, faster in 11 of 11 runs, outputs identical (1 tested entry) |
 | cJSON | 6d9f244 | 2 attempts, $0.004 | `parse_string` (3%); the library's own code is ~25% of the workload, the rest is libc (`sprintf`/`strtod` for doubles) | top 6 | $0.85 | **1.072x**, faster in 11 of 11 runs, output hash identical (3 tested entries) |
+| libyaml | 90a56d4 | 4 attempts, $0.005 (driver and input generator written as files) | `yaml_parser_fetch_plain_scalar` (19%) | top 8 | $2.43 | no win: 99 candidates, 31 correct but not faster; the hot code is in scanner functions of 300-1,500 instructions |
 | lz4 | 5e08bd2 | 1 attempt, $0.001 | `LZ4HC_compress_generic_internal` (62%) | none | - | out of reach: the hot code is force-inlined into functions of 4,000-8,600 instructions; what oqed can take is under 5% each |
 
 What the sweep caught along the way:
@@ -34,3 +35,12 @@ What the sweep caught along the way:
   repair turn: 6 of 67 rejections were assembler errors (9%), against 47 of 74
   (64%) in the lz4 and zlib runs. The ABI check is now the most common
   rejection (14, reading caller-saved registers after calls).
+- libyaml: `oqed init` failed four times while the model quoted a C driver and
+  a Python generator inside a TOML string inside a shell command. It now
+  writes them as files in `oqed_support/` (copied here), and the scan never
+  searches them: the driver's own FNV hash was 14% of the samples and would
+  have been the easiest "win".
+- libyaml was the first run where calling-convention violations go back to the
+  model with each one explained (bytes pushed, which register a call
+  clobbered). They were still the most common rejection (39 of 99, mostly
+  misaligned calls), but 14 of 22 repaired candidates then passed the check.
