@@ -13,16 +13,34 @@ export interface RunIndexEntry {
   started: number;
   functions: string[];
   project: string | null; // whole-project runs
+  result: ProjectResult | null; // a whole-project run's measured outcome
+}
+
+export interface ProjectResult {
+  speedup: number | null; // whole program, plain build / oqed-cc build
+  valid: boolean | null;
+  faster_runs: number | null;
+  runs: number | null;
+  unit: string | null;
+  functions: number; // found by the scan
+  searchable: number;
+  won: string[]; // functions with a winner in this run
+  cost: number | null;
 }
 
 function describe(file: string, demo: boolean): RunIndexEntry | null {
-  const [first, second] = fs.readFileSync(file, "utf8").split("\n", 2);
+  const text = fs.readFileSync(file, "utf8");
+  const [first, second] = text.split("\n", 2);
   try {
     const e = JSON.parse(first);
     let project: string | null = null;
+    let result: ProjectResult | null = null;
     try {
       const s = JSON.parse(second);
-      if (s.type === "project_scanned") project = s.project;
+      if (s.type === "project_scanned") {
+        project = s.project;
+        result = summarize(text, s);
+      }
     } catch {
       /* a run with one event so far */
     }
@@ -35,10 +53,47 @@ function describe(file: string, demo: boolean): RunIndexEntry | null {
       started: e.timestamp,
       functions: e.functions,
       project,
+      result,
     };
   } catch {
     return null;
   }
+}
+
+function summarize(text: string, scanned: { functions: { skipped: string | null }[] }): ProjectResult {
+  const r: ProjectResult = {
+    speedup: null,
+    valid: null,
+    faster_runs: null,
+    runs: null,
+    unit: null,
+    functions: scanned.functions.length,
+    searchable: scanned.functions.filter((f) => !f.skipped).length,
+    won: [],
+    cost: null,
+  };
+  const won = new Set<string>();
+  for (const line of text.split("\n")) {
+    // Only the few event types needed; skip parsing the bulky ones.
+    if (!line.includes('"new_best"') && !line.includes('"run_finished"') && !line.includes('"project_measured"')) continue;
+    try {
+      const e = JSON.parse(line);
+      if (e.type === "new_best") won.add(e.function_id);
+      else if (e.type === "run_finished") r.cost = e.cost_usd ?? null;
+      else if (e.type === "project_measured") {
+        const m = e.report;
+        r.speedup = m.speedup;
+        r.valid = m.valid ?? (m.test_output_identical && m.output_files_identical);
+        r.faster_runs = m.faster_runs ?? null;
+        r.runs = m.plain?.runs?.length ?? null;
+        r.unit = m.unit;
+      }
+    } catch {
+      /* a line being written */
+    }
+  }
+  r.won = [...won];
+  return r;
 }
 
 function listRuns(runsDir: string, includeLocal: boolean): Map<string, { entry: RunIndexEntry; path: string }> {

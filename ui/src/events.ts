@@ -214,6 +214,19 @@ export interface RunIndexEntry {
   started: number;
   functions: string[];
   project?: string | null;
+  result?: ProjectResult | null;
+}
+
+export interface ProjectResult {
+  speedup: number | null;
+  valid: boolean | null;
+  faster_runs: number | null;
+  runs: number | null;
+  unit: string | null;
+  functions: number;
+  searchable: number;
+  won: string[];
+  cost: number | null;
 }
 
 export function parseJsonl(text: string): RunEvent[] {
