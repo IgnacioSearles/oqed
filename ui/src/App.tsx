@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Leaderboard, RunList } from "./components/Leaderboard";
 import { Panel } from "./components/Panel";
+import { ProjectView } from "./components/ProjectView";
 import { ResultView } from "./components/ResultView";
 import { SearchView } from "./components/SearchView";
 import { type RunEvent, type RunIndexEntry, parseJsonl } from "./events";
@@ -8,24 +9,29 @@ import { buildRun, fmtUsd, modelLabel, usage } from "./model";
 import { countUntil, useReplay } from "./replay";
 
 type Theme = "light" | "dark";
-type View = "result" | "search";
+type View = "project" | "result" | "search";
 
 const POLL_MS = 1500;
+const INDEX_POLL_MS = 3000;
+// A project run's whole-program measurement comes after run_finished; stop
+// waiting for it once the log has been quiet this long.
+const MEASURE_WAIT_S = 20 * 60;
 
-function readHash(): { run?: string; fn?: string; view: View } {
+function readHash(): { run?: string; fn?: string; view?: View } {
   const p = new URLSearchParams(location.hash.slice(1));
+  const v = p.get("view");
   return {
     run: p.get("run") ?? undefined,
     fn: p.get("fn") ?? undefined,
-    view: p.get("view") === "search" ? "search" : "result",
+    view: v === "search" || v === "result" || v === "project" ? v : undefined,
   };
 }
 
 function writeHash(run: string | undefined, fn: string | undefined, view: View) {
   const p = new URLSearchParams();
   if (run) p.set("run", run);
-  if (fn) p.set("fn", fn);
-  if (view !== "result") p.set("view", view);
+  if (fn && view !== "project") p.set("fn", fn);
+  p.set("view", view);
   history.replaceState(null, "", `#${p}`);
 }
 
@@ -33,23 +39,29 @@ export default function App() {
   const [runs, setRuns] = useState<RunIndexEntry[]>([]);
   const [runId, setRunId] = useState<string | undefined>(readHash().run);
   const [fnId, setFnId] = useState<string | undefined>(readHash().fn);
-  const [view, setView] = useState<View>(readHash().view);
+  const [chosenView, setView] = useState<View | undefined>(readHash().view);
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme as Theme) ?? "light");
 
+  // The run list: re-read while developing, so new runs show up without a reload.
   useEffect(() => {
-    fetch("runs/index.json")
-      .then((r) => r.json())
-      .then((list: RunIndexEntry[]) => {
-        setRuns(list);
-        // Default to the newest real (non-synthetic) run, preferring demo runs.
-        setRunId((cur) => cur ?? (list.find((r) => r.demo && !r.fake) ?? list.find((r) => !r.fake) ?? list[0])?.id);
-      })
-      .catch(() => setError("could not load the run index"));
+    const load = (first: boolean) =>
+      fetch("runs/index.json", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((list: RunIndexEntry[]) => {
+          setRuns((cur) => (JSON.stringify(cur) === JSON.stringify(list) ? cur : list));
+          // Default to the newest real (non-synthetic) run, preferring demo runs.
+          setRunId((cur) => cur ?? (list.find((r) => r.demo && !r.fake) ?? list.find((r) => !r.fake) ?? list[0])?.id);
+        })
+        .catch(() => first && setError("could not load the run index"));
+    load(true);
+    if (!import.meta.env.DEV) return;
+    const id = setInterval(() => load(false), INDEX_POLL_MS);
+    return () => clearInterval(id);
   }, []);
 
-  const entry = runs.find((r) => r.id === runId);
+  const entry = useMemo(() => runs.find((r) => r.id === runId), [runs, runId]);
   useEffect(() => {
     if (!entry) return;
     setEvents(null);
@@ -60,10 +72,19 @@ export default function App() {
   }, [entry]);
 
   const run = useMemo(() => (events ? buildRun(events) : null), [events]);
+  const timestamps = useMemo(() => (events ?? []).map((e) => e.timestamp), [events]);
   const runCost = useMemo(() => (run ? usage(run.functions.flatMap((f) => f.candidates)).total.cost : null), [run]);
   const fn = run?.functions.find((f) => f.id === fnId) ?? run?.functions[0];
-  // Local runs still in progress: re-read the log until it finishes.
-  const live = Boolean(entry && run && !run.finished && !entry.demo);
+  const view: View = chosenView ?? (run?.project ? "project" : "result");
+  const lastTs = events?.length ? events[events.length - 1].timestamp : 0;
+  // Local runs still in progress: re-read the log until it finishes (for a
+  // project run, until the whole program has been measured).
+  const live = Boolean(
+    entry &&
+      run &&
+      !entry.demo &&
+      (!run.finished || (run.project && !run.project.report && Date.now() / 1000 - lastTs < MEASURE_WAIT_S)),
+  );
 
   useEffect(() => {
     if (!live || !entry) return;
@@ -78,8 +99,18 @@ export default function App() {
 
   useEffect(() => writeHash(runId, fn?.id, view), [runId, fn?.id, view]);
 
+  // The project view replays the whole run.
+  const runRange = useMemo(
+    () => ({ start: events?.[0]?.timestamp ?? 0, end: events?.length ? events[events.length - 1].timestamp : 0 }),
+    [events],
+  );
+  const runReplay = useReplay(runRange.start, runRange.end);
+  const runShown = useMemo(() => {
+    if (!events || !run || runReplay.atEnd) return run;
+    return buildRun(events.slice(0, countUntil(timestamps, runReplay.cursor)));
+  }, [events, run, timestamps, runReplay.cursor, runReplay.atEnd]);
+
   // Replay covers the selected function's part of the run.
-  const timestamps = useMemo(() => (events ?? []).map((e) => e.timestamp), [events]);
   const range = useMemo(() => {
     let start = Infinity;
     let end = 0;
@@ -129,7 +160,7 @@ export default function App() {
             </span>
           )}
           <span className="flex" role="group" aria-label="view">
-            {(["result", "search"] as const).map((v) => (
+            {(run?.project ? (["project", "result", "search"] as const) : (["result", "search"] as const)).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -162,9 +193,19 @@ export default function App() {
             onSelect={(id) => {
               setRunId(id);
               setFnId(undefined);
+              setView(undefined);
             }}
           />
-          {run && <Leaderboard functions={run.functions} selected={fn?.id ?? null} onSelect={setFnId} />}
+          {run && (
+            <Leaderboard
+              functions={run.functions}
+              selected={view === "project" ? null : (fn?.id ?? null)}
+              onSelect={(id) => {
+                setFnId(id);
+                if (view === "project") setView("result");
+              }}
+            />
+          )}
         </aside>
 
         <main className="min-w-0 space-y-1.5">
@@ -174,11 +215,37 @@ export default function App() {
             </div>
           )}
           {!run && !error && <div className="border border-rule bg-panel px-2.5 py-1.5 text-ink-3">loading…</div>}
-          {fn && view === "result" && <ResultView fn={fn} />}
+          {run && runShown && view === "project" && (
+            <ProjectView
+              run={runShown}
+              full={run}
+              replay={runReplay}
+              live={live && runReplay.atEnd}
+              onOpen={(id) => {
+                setFnId(id);
+                setView("result");
+              }}
+            />
+          )}
+          {fn && view === "result" && <ResultView fn={fn} unit={run?.project?.report?.unit} />}
           {fn && shown && view === "search" && (
             <SearchView fn={shown} full={fn} replay={replay} live={live && replay.atEnd} />
           )}
-          {run && (
+          {run?.project && view === "project" && (
+            <Panel title="Method">
+              <p className="max-w-5xl px-2.5 py-2 leading-relaxed text-ink-3">
+                oqed builds the project once with a sampling profiler (100 µs timer, every thread) and runs its workload;
+                each function's tile is its share of the samples, inlined callees included. It searches the hottest
+                functions it can rewrite. A candidate is substituted into a copy of the project, built, and kept only if the
+                project's test prints the same output and writes byte-identical files, and the benchmark is faster in a
+                paired sign test (p ≤ 0.07) run with nothing else benchmarking. Candidates that call other functions must
+                pass a static System V ABI check first. Candidates generated by {models || "Muse models"}. The whole-program
+                number compares the plain build with the build through oqed-cc in alternating runs, measured on a development
+                laptop. “Tested” code passed these checks but has no SMT proof.
+              </p>
+            </Panel>
+          )}
+          {run && !run.project && (
             <Panel title="Method">
               <p className="max-w-5xl px-2.5 py-2 leading-relaxed text-ink-3">
                 Candidates generated by {models || "Muse models"}.{" "}

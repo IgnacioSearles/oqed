@@ -14,21 +14,25 @@ export interface MeasurementRow {
 
 /** Profiler-style table of measurements with an inline latency bar: oqed in
  * the accent color, compilers in neutral gray, whisker = interquartile range. */
-export function LatencyBars({ rows, unit }: { rows: MeasurementRow[]; unit: string }) {
+export function LatencyBars({ rows, unit, project = false }: { rows: MeasurementRow[]; unit: string; project?: boolean }) {
   const [hover, setHover] = useState<string | null>(null);
   const max = Math.max(...rows.map((r) => r.cycles.median + r.cycles.spread / 2)) * 1.05;
   const pct = (v: number) => `${(v / max) * 100}%`;
 
   return (
-    <Panel title="Measurements" right={`latency in ${unit} · lower is faster`} bodyClassName="overflow-x-auto">
+    <Panel
+      title="Measurements"
+      right={project ? `${unit}, this function replaced · lower is faster` : `latency in ${unit} · lower is faster`}
+      bodyClassName="overflow-x-auto"
+    >
       <table className="tabular w-full min-w-[40rem] border-collapse">
         <thead>
           <tr className="border-b border-rule-soft text-left text-ink-3">
             <th className="px-2.5 py-1 font-normal">code</th>
             <th className="px-2.5 py-1 text-right font-normal">median</th>
             <th className="px-2.5 py-1 text-right font-normal">IQR</th>
-            <th className="w-[40%] px-2.5 py-1 font-normal">latency</th>
-            <th className="px-2.5 py-1 text-right font-normal">llvm-mca</th>
+            <th className="w-[40%] px-2.5 py-1 font-normal">{project ? "run time" : "latency"}</th>
+            {!project && <th className="px-2.5 py-1 text-right font-normal">llvm-mca</th>}
             <th className="px-2.5 py-1 text-right font-normal">instrs</th>
             <th className="px-2.5 py-1 text-right font-normal">speedup</th>
           </tr>
@@ -65,7 +69,7 @@ export function LatencyBars({ rows, unit }: { rows: MeasurementRow[]; unit: stri
                   )}
                 </div>
               </td>
-              <td className="px-2.5 py-1.5 text-right">{r.mcaLatency ?? "—"}</td>
+              {!project && <td className="px-2.5 py-1.5 text-right">{r.mcaLatency || "—"}</td>}
               <td className="px-2.5 py-1.5 text-right">{r.instructions}</td>
               <td className="px-2.5 py-1.5 text-right">{r.speedup ? `${r.speedup.toFixed(2)}×` : "—"}</td>
             </tr>

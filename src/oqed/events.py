@@ -143,6 +143,33 @@ class RunFinished(_Event):
     cost_usd: float | None = None  # model spend for the whole run (list-price estimate)
 
 
+class ScannedFunction(BaseModel):
+    name: str  # target name (the function, qualified by file stem on a clash)
+    function: str
+    location: str  # file:line relative to the project root
+    time: float  # share of the workload's samples in its code
+    skipped: str | None = None  # why oqed can't search it, if it can't
+    searched: bool = False  # chosen for this run
+
+
+class ProjectScanned(_Event):
+    """A whole-project run: every function the scan found, searched or not.
+    The shares don't add up to 1; the rest is outside the project (libc, ...)."""
+
+    type: Literal["project_scanned"] = "project_scanned"
+    project: str
+    functions: list[ScannedFunction]
+    # Lock entries from earlier runs: function, status, speedup, run, candidate.
+    locked: list[dict] = []
+
+
+class ProjectMeasured(_Event):
+    """`oqed report` after the run: the whole program, plain build vs oqed-cc."""
+
+    type: Literal["project_measured"] = "project_measured"
+    report: dict
+
+
 Event = Annotated[
     RunStarted
     | BaselineReady
@@ -154,7 +181,9 @@ Event = Annotated[
     | SearchStalled
     | SearchStopped
     | TimingBreakdown
-    | RunFinished,
+    | RunFinished
+    | ProjectScanned
+    | ProjectMeasured,
     Field(discriminator="type"),
 ]
 
@@ -185,6 +214,12 @@ class EventLog:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+def append_event(path: Path, event: _Event) -> None:
+    """Add an event to a finished run's log."""
+    with path.open("a") as f:
+        f.write(event.model_dump_json() + "\n")
 
 
 def read_events(path: Path) -> list[Event]:

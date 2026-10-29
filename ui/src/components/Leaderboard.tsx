@@ -72,8 +72,9 @@ export function RunList({
                 }`}
               >
                 <span className="tabular">{when}</span>
-                <span className="shrink-0 text-ink-3">
-                  {r.functions.length}fn {r.fake ? "synthetic" : r.demo ? "demo" : "local"}
+                <span className="truncate text-ink-3">
+                  {r.project ? `${r.project} · ` : ""}
+                  {r.functions.length}fn{r.fake ? " synthetic" : r.demo ? " demo" : ""}
                 </span>
               </button>
             </li>

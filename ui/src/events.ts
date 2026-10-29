@@ -135,6 +135,62 @@ export interface RunFinished extends Base {
   cost_usd?: number | null;
 }
 
+export interface ScannedFunction {
+  name: string;
+  function: string;
+  location: string; // file:line, relative to the project root
+  time: number; // share of the workload's samples in its code
+  skipped: string | null; // why oqed can't search it
+  searched: boolean;
+}
+
+export interface LockedEntry {
+  function: string;
+  status: "proven" | "tested";
+  speedup: number;
+  run: string;
+  candidate: string;
+}
+
+export interface ProjectScanned extends Base {
+  type: "project_scanned";
+  project: string;
+  functions: ScannedFunction[];
+  locked: LockedEntry[];
+}
+
+export interface Quartiles {
+  median: number;
+  q1: number;
+  q3: number;
+  runs: number[];
+}
+
+export interface ProjectReport {
+  project: string;
+  compiler: string;
+  unit: string;
+  bench: string;
+  entries: number;
+  proven: number;
+  tested: number;
+  applied: number;
+  test: string;
+  test_output_identical: boolean;
+  output_files: number;
+  output_files_identical: boolean;
+  plain: Quartiles;
+  oqed: Quartiles;
+  speedup: number;
+  valid?: boolean;
+  faster_runs?: number;
+}
+
+export interface ProjectMeasured extends Base {
+  type: "project_measured";
+  report: ProjectReport;
+}
+
 export type RunEvent =
   | RunStarted
   | BaselineReady
@@ -146,7 +202,9 @@ export type RunEvent =
   | SearchStalled
   | SearchStopped
   | TimingBreakdown
-  | RunFinished;
+  | RunFinished
+  | ProjectScanned
+  | ProjectMeasured;
 
 export interface RunIndexEntry {
   id: string;
@@ -155,6 +213,7 @@ export interface RunIndexEntry {
   fake: boolean;
   started: number;
   functions: string[];
+  project?: string | null;
 }
 
 export function parseJsonl(text: string): RunEvent[] {

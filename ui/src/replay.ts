@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export const SPEEDS = [1, 4, 16, 64] as const;
+export const SPEEDS = [1, 4, 16, 64, 256] as const;
 
 export interface Replay {
   /** Absolute timestamp (seconds) of the playback cursor. */

@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { diffLines, type LineMark } from "../diff";
 import {
   type FunctionView,
   bestCompiler,
+  definitionStart,
   fmtTokens,
   fmtUsd,
   headlineSpeedup,
@@ -19,7 +20,8 @@ import { StatusBadge } from "./StatusBadge";
 const same = (n: number): LineMark[] => new Array(n).fill("same");
 const countInsns = (lines: string[]) => lines.filter((l) => !l.endsWith(":")).length;
 
-export function ResultView({ fn }: { fn: FunctionView }) {
+export function ResultView({ fn, unit }: { fn: FunctionView; unit?: string }) {
+  const [context, setContext] = useState(false);
   const best = fn.best;
   const faster = bestCompiler(fn);
   const speedup = headlineSpeedup(fn);
@@ -75,19 +77,29 @@ export function ResultView({ fn }: { fn: FunctionView }) {
   ];
 
   const nCols = listings.cols.length + (best ? 1 : 0);
+  const sourceLines = fn.source.trim().split("\n");
+  const defStart = fn.project ? definitionStart(fn.source.trim(), fn.id.split(".")[0]) : 0;
 
   return (
     <div className="space-y-1.5">
       <Panel title={fn.id} right={<StatusBadge status={best?.status} reason={best?.statusReason} />}>
         <div className="grid gap-x-6 gap-y-2 px-2.5 py-2 md:grid-cols-[auto_minmax(0,1fr)]">
-          <div className="text-ink-3">signature</div>
-          <div className="break-all text-ink-2">{fn.signature}</div>
+          {!fn.project && (
+            <>
+              <div className="text-ink-3">signature</div>
+              <div className="break-all text-ink-2">{fn.signature}</div>
+            </>
+          )}
           <div className="text-ink-3">result</div>
           <div>
             {best && speedup ? (
               <span>
-                <span className="text-xl font-bold text-accent">{speedup.toFixed(2)}×</span>{" "}
-                <span className="text-ink-2">lower latency than {faster.name} -O3 (the faster compiler)</span>
+                <span className="text-xl font-bold text-accent">{speedup.toFixed(fn.project ? 3 : 2)}×</span>{" "}
+                <span className="text-ink-2">
+                  {fn.project
+                    ? `faster whole program with only this function replaced, as measured during the search (the project's benchmark against the ${faster.name} -O3 build, paired runs while nothing else benchmarked; the project tab has the final measurement with every lock entry)`
+                    : `lower latency than ${faster.name} -O3 (the faster compiler)`}
+                </span>
               </span>
             ) : (
               <span className="text-ink-2">
@@ -129,10 +141,22 @@ export function ResultView({ fn }: { fn: FunctionView }) {
         </div>
       </Panel>
 
-      {rows.length > 0 && <LatencyBars rows={rows} unit={latencyUnit(fn)} />}
+      {rows.length > 0 && <LatencyBars rows={rows} unit={latencyUnit(fn, unit)} project={fn.project} />}
 
-      <Panel title="C source" right="reference semantics" bodyClassName="overflow-x-auto">
-        <pre className="px-2.5 py-2 leading-[1.6] text-ink-2">{fn.source.trim()}</pre>
+      <Panel
+        title="C source"
+        right={
+          defStart > 0 ? (
+            <button className="text-accent hover:underline" onClick={() => setContext((c) => !c)}>
+              {context ? "hide" : "show"} the {defStart} lines of declarations it uses
+            </button>
+          ) : (
+            "reference semantics"
+          )
+        }
+        bodyClassName="overflow-x-auto"
+      >
+        <pre className="px-2.5 py-2 leading-[1.6] text-ink-2">{sourceLines.slice(context ? 0 : defStart).join("\n").trim()}</pre>
       </Panel>
 
       <div

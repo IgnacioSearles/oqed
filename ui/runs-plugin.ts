@@ -12,12 +12,20 @@ export interface RunIndexEntry {
   fake: boolean;
   started: number;
   functions: string[];
+  project: string | null; // whole-project runs
 }
 
 function describe(file: string, demo: boolean): RunIndexEntry | null {
-  const first = fs.readFileSync(file, "utf8").split("\n", 1)[0];
+  const [first, second] = fs.readFileSync(file, "utf8").split("\n", 2);
   try {
     const e = JSON.parse(first);
+    let project: string | null = null;
+    try {
+      const s = JSON.parse(second);
+      if (s.type === "project_scanned") project = s.project;
+    } catch {
+      /* a run with one event so far */
+    }
     if (e.type !== "run_started") return null;
     return {
       id: e.run_id,
@@ -26,6 +34,7 @@ function describe(file: string, demo: boolean): RunIndexEntry | null {
       fake: Boolean(e.config?.fake),
       started: e.timestamp,
       functions: e.functions,
+      project,
     };
   } catch {
     return null;

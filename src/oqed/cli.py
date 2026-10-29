@@ -387,6 +387,7 @@ def optimize(
                 typer.echo(f"already in {lock_path}, not searched again: {', '.join(skipped)}")
             if not chosen:
                 raise typer.Exit("nothing to search")
+            scanned = scan_summary(sc, {t.name for t in chosen}, lock_path)
         from_run = asyncio.run(
             run_search(
                 chosen,
@@ -394,6 +395,7 @@ def optimize(
                 get_provider("wonder"),
                 SearchConfig(max_usd=max_usd),
                 on_event=_print_event,
+                scanned=None if targets else scanned,
             )
         )
     path = Path(from_run) if from_run.endswith(".jsonl") else RUNS_DIR / f"{from_run}.jsonl"
@@ -444,9 +446,35 @@ def optimize(
     typer.echo(f"wrote {len(new)} entries to {lock_path}")
     if project_mode and (old or new):
         from . import project
+        from .events import ProjectMeasured, append_event
         from .report import report as do_report
 
-        do_report(project.load(Path(".").resolve()))
+        result = do_report(project.load(Path(".").resolve()))
+        append_event(path, ProjectMeasured(run_id=path.stem, report=result))
+
+
+def scan_summary(sc, chosen: set[str], lock_path: Path) -> dict:
+    """ProjectScanned fields for a scan."""
+    from . import lock
+
+    entries = lock.load(lock_path) if lock_path.exists() else []
+    return {
+        "project": Path(".").resolve().name,
+        "functions": [
+            {
+                "name": f.name,
+                "function": f.function,
+                "location": f.location,
+                "time": round(f.time, 5),
+                "skipped": f.skipped,
+                "searched": f.name in chosen,
+            }
+            for f in sc.functions
+        ],
+        "locked": [
+            {k: getattr(e, k) for k in ("function", "status", "speedup", "run", "candidate")} for e in entries
+        ],
+    }
 
 
 def main() -> None:

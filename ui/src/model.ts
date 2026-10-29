@@ -4,10 +4,13 @@ import type {
   Baseline,
   CandidateProposed,
   Cycles,
+  LockedEntry,
   ModelTier,
+  ProjectReport,
   ProofStatus,
   RejectStage,
   RunEvent,
+  ScannedFunction,
 } from "./events";
 
 export interface Candidate {
@@ -22,7 +25,7 @@ export interface Candidate {
   tokensIn: number | null;
   tokensOut: number | null;
   cost: number | null; // USD; null when the model's price is unknown
-  rejected?: { stage: RejectStage; reason: string; counterexample: Record<string, number> | null };
+  rejected?: { stage: RejectStage; reason: string; counterexample: Record<string, number> | null; at: number };
   status?: ProofStatus;
   statusReason?: string | null;
   cycles?: Cycles;
@@ -43,6 +46,7 @@ export interface FunctionView {
   stalls: { t: number; afterN: number; rounds: number }[];
   stopped: { t: number; afterN: number; reason: string } | null; // converged or hit the spending cap
   inlined: boolean; // latency measured with the code inlined into a loop (else through call/ret)
+  project: boolean; // judged by the project's own build, test and benchmark (whole program)
   timing: { model: number; harness: number; verifier: number; orchestrator: number };
 }
 
@@ -54,6 +58,14 @@ export interface RunView {
   fake: boolean;
   finished: boolean;
   functions: FunctionView[];
+  project: ProjectInfo | null; // whole-project runs
+}
+
+export interface ProjectInfo {
+  name: string;
+  functions: ScannedFunction[];
+  locked: LockedEntry[]; // from earlier runs
+  report: ProjectReport | null; // the whole program, measured after the run
 }
 
 export function buildRun(events: RunEvent[]): RunView {
@@ -65,6 +77,7 @@ export function buildRun(events: RunEvent[]): RunView {
     fake: false,
     finished: false,
     functions: [],
+    project: null,
   };
   const fns = new Map<string, FunctionView>();
   const cands = new Map<string, Candidate>();
@@ -107,7 +120,8 @@ export function buildRun(events: RunEvent[]): RunView {
           bestHistory: [],
           stalls: [],
           stopped: null,
-          inlined: run.config.bench === "inline",
+          inlined: run.config.bench === "inline" && !run.project,
+          project: Boolean(run.project),
           timing: { model: 0, harness: 0, verifier: 0, orchestrator: 0 },
         };
         fns.set(fn.id, fn);
@@ -121,7 +135,7 @@ export function buildRun(events: RunEvent[]): RunView {
       }
       case "candidate_rejected": {
         const c = cands.get(e.candidate_id);
-        if (c) c.rejected = { stage: e.stage, reason: e.reason, counterexample: e.counterexample };
+        if (c) c.rejected = { stage: e.stage, reason: e.reason, counterexample: e.counterexample, at: e.timestamp };
         break;
       }
       case "candidate_verified": {
@@ -173,6 +187,12 @@ export function buildRun(events: RunEvent[]): RunView {
       case "run_finished":
         run.finished = true;
         break;
+      case "project_scanned":
+        run.project = { name: e.project, functions: e.functions, locked: e.locked, report: null };
+        break;
+      case "project_measured":
+        if (run.project) run.project.report = e.report;
+        break;
     }
   }
   return run;
@@ -210,8 +230,32 @@ export function instructionLines(asm: string): string[] {
 }
 
 /** Latency unit for axis and table labels. */
-export function latencyUnit(fn: FunctionView): string {
+export function latencyUnit(fn: FunctionView, projectUnit = "CPU ms"): string {
+  if (fn.project) return `whole program, ${projectUnit}`;
   return fn.inlined ? "TSC ticks/iteration, inlined" : "TSC ticks/call";
+}
+
+/** The function's own definition in a slice (the slice puts the declarations
+ * it depends on first): the line where it starts, or 0. */
+export function definitionStart(source: string, name: string): number {
+  const lines = source.split("\n");
+  const re = new RegExp(`\\b${name.replace(/[^\w]/g, "")}\\s*\\(`);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    // Definitions start at column 0; an indented match is a call (a recursive one).
+    if (!re.test(lines[i]) || /^\s/.test(lines[i]) || lines[i].trim().endsWith(";")) continue;
+    // The definition's opening brace follows within a few lines, without a `;` first.
+    const rest = lines.slice(i, i + 6).join("\n");
+    const brace = rest.indexOf("{");
+    const semi = rest.indexOf(";");
+    if (brace >= 0 && (semi < 0 || brace < semi)) {
+      // Include a return type on the line(s) above, e.g. `static int\nname(...)`.
+      let start = i;
+      while (start > 0 && lines[start - 1].trim() && !/[;}{]\s*$/.test(lines[start - 1]) && !lines[start - 1].startsWith("#"))
+        start--;
+      return start;
+    }
+  }
+  return 0;
 }
 
 /** Pipeline stages in the order the search runs them, with the rejection

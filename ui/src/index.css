@@ -90,3 +90,40 @@ body {
 .tabular {
   font-variant-numeric: tabular-nums;
 }
+
+/* Codebase map */
+.oqed-hatch {
+  background: repeating-linear-gradient(135deg, var(--panel) 0 5px, var(--rule-soft) 5px 6px);
+}
+.oqed-hatch-dense {
+  background: repeating-linear-gradient(45deg, var(--bg) 0 3px, var(--rule-soft) 3px 4px);
+}
+@keyframes oqed-pulse {
+  50% {
+    background-color: var(--panel);
+  }
+}
+.oqed-pulse {
+  animation: oqed-pulse 1.6s ease-in-out infinite;
+}
+@keyframes oqed-flash {
+  0%,
+  60% {
+    box-shadow: inset 0 0 0 3px var(--bad);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 var(--bad);
+  }
+}
+.oqed-flash {
+  animation: oqed-flash 2s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oqed-pulse,
+  .oqed-flash {
+    animation: none;
+  }
+  .oqed-flash {
+    box-shadow: inset 0 0 0 3px var(--bad);
+  }
+}

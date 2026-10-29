@@ -43,6 +43,7 @@ from .events import (
     FunctionSummary,
     ModelTier,
     NewBest,
+    ProjectScanned,
     ProofStatus,
     RejectStage,
     RunFinished,
@@ -842,7 +843,9 @@ async def run_search(
     run_id: str | None = None,
     on_event=None,
     runs_dir: Path = RUNS_DIR,
+    scanned: dict | None = None,
 ) -> str:
+    """`scanned`: a whole-project run's ProjectScanned fields, logged after RunStarted."""
     run_id = run_id or f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
     bench_lock = BenchLock()
     verifier = Verifier(workers=config.verifier_workers)
@@ -871,6 +874,8 @@ async def run_search(
                 config={k: v for k, v in vars(config).items()},
             )
         )
+        if scanned is not None:
+            log.emit(ProjectScanned(run_id=run_id, **scanned))
         # Several functions at once (in the given order, so the hottest start
         # first). They share the spending cap and take turns at the benchmark.
         slots = asyncio.Semaphore(config.functions_in_parallel if config.waves else 1)
