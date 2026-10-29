@@ -218,6 +218,8 @@ export function bestCompiler(fn: FunctionView): { name: "clang" | "gcc"; baselin
 
 /** Speedup of the best candidate over the faster compiler, or null. */
 export function headlineSpeedup(fn: FunctionView): number | null {
+  // The project's benchmark: against the C build timed alongside (the program drifts).
+  if (fn.project && fn.best?.paired) return fn.best.paired;
   const bar = bestCompiler(fn).baseline.cycles?.median;
   const best = fn.best?.cycles?.median;
   return bar && best ? bar / best : null;

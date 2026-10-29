@@ -822,7 +822,10 @@ class FunctionSearch:
             speedup_vs_clang=speedup,
             speedup_vs_gcc=speedup,
         )
-        if not (won and _faster(cyc, base, cfg.min_gain)):
+        # Paired runs: the sign test is the noise check (each series' spread
+        # includes the machine's drift, which the pairing cancels), plus the
+        # minimum gain on the medians.
+        if not (won and cyc.median < base.median * (1 - cfg.min_gain)):
             slower = f"{cyc.median:.2f} {self.unit}, not faster than the C build ({base.median:.2f})"
             if won is False and cyc.median < base.median:
                 slower += ", not in enough of the paired runs"
