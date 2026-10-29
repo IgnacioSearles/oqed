@@ -46,6 +46,17 @@ export interface BaselineReady extends Base {
   clang: Baseline;
   gcc: Baseline;
   reference: Baseline | null;
+  tricks?: TrickRef[]; // verified wins on similar functions shown in its prompt
+}
+
+export interface TrickRef {
+  id: string; // run:candidate
+  function: string;
+  project: string;
+  explanation: string;
+  status: "proven" | "tested";
+  speedup: number | null;
+  similarity: number;
 }
 
 export interface CandidateProposed extends Base {

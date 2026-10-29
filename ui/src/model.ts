@@ -11,6 +11,7 @@ import type {
   RejectStage,
   RunEvent,
   ScannedFunction,
+  TrickRef,
 } from "./events";
 
 export interface Candidate {
@@ -47,6 +48,7 @@ export interface FunctionView {
   stopped: { t: number; afterN: number; reason: string } | null; // converged or hit the spending cap
   inlined: boolean; // latency measured with the code inlined into a loop (else through call/ret)
   project: boolean; // judged by the project's own build, test and benchmark (whole program)
+  tricks: TrickRef[]; // verified wins on similar functions its prompt showed
   timing: { model: number; harness: number; verifier: number; orchestrator: number };
 }
 
@@ -122,6 +124,7 @@ export function buildRun(events: RunEvent[]): RunView {
           stopped: null,
           inlined: run.config.bench === "inline" && !run.project,
           project: Boolean(run.project),
+          tricks: e.tricks ?? [],
           timing: { model: 0, harness: 0, verifier: 0, orchestrator: 0 },
         };
         fns.set(fn.id, fn);

@@ -128,6 +128,24 @@ export function ResultView({ fn, unit }: { fn: FunctionView; unit?: string }) {
               </div>
             </>
           )}
+          {fn.tricks.length > 0 && (
+            <>
+              <div className="text-ink-3">tricks shown</div>
+              <div className="space-y-0.5 text-ink-2">
+                {fn.tricks.map((t) => (
+                  <div key={t.id} title={t.explanation}>
+                    <span className="font-bold text-ink">{t.function}</span>{" "}
+                    <span className="text-ink-3">
+                      ({t.project}
+                      {t.speedup ? `, ${t.speedup.toFixed(2)}×` : ""}, {t.status}, similarity {t.similarity.toFixed(2)})
+                    </span>{" "}
+                    <span className="hidden xl:inline">{t.explanation}</span>
+                  </div>
+                ))}
+                <div className="text-ink-3">verified wins on similar functions, in the prompt as examples (trick library)</div>
+              </div>
+            </>
+          )}
           {spend.calls > 0 && (
             <>
               <div className="text-ink-3">search cost</div>
