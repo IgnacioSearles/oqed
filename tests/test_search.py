@@ -278,3 +278,11 @@ def test_project_runs_log_the_scan_after_run_started(tmp_path):
     events = read_events(tmp_path / f"{run_id}.jsonl")
     assert [e.type for e in events[:2]] == ["run_started", "project_scanned"]
     assert events[1].functions[0].searched
+
+
+def test_the_first_wave_can_open_with_the_reasoning_tier(tmp_path):
+    volume, reasoning = MockProvider([WRONG], seed=0), MockProvider([WRONG], seed=1)
+    cfg = SearchConfig(candidates=6, first_wave_reasoning=2, repairs=0)
+    run_id = asyncio.run(run_search([T], volume, reasoning, cfg, runs_dir=tmp_path))
+    tiers = [e.model_tier for e in read_events(tmp_path / f"{run_id}.jsonl") if e.type == "candidate_proposed"]
+    assert sorted(tiers) == ["reasoning"] * 2 + ["volume"] * 4

@@ -78,6 +78,7 @@ class SearchConfig:
     # `candidates` finding nothing.
     waves: bool = True
     first_wave: int = 6
+    first_wave_reasoning: int = 0  # of the first wave's calls, how many go to the reasoning tier
     wave: int = 3
     near_miss_margin: float = 0.03  # no win yet: one more wave only if a candidate came this close
     # Nothing correct yet (every candidate failed to assemble, broke the ABI or
@@ -458,6 +459,8 @@ class FunctionSearch:
             tiers: list[ModelTier] = ["volume"] * n
             if escalated:
                 tiers[0] = "reasoning"
+            if waves == 0 and not self.reasoning_unaffordable:
+                tiers[: cfg.first_wave_reasoning] = ["reasoning"] * min(cfg.first_wave_reasoning, n)
             started = await asyncio.gather(*(self._slot(t) for t in tiers))
             waves += 1
             if not all(started) and self.budget.exhausted or not any(started):

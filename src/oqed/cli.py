@@ -339,6 +339,11 @@ def optimize(
     top: int = typer.Option(
         None, help="project mode: search only the N most-called functions not yet in the lock"
     ),
+    wonder: int = typer.Option(
+        0,
+        help="of each function's first 6 candidates, how many Muse Wonder writes (it also helps on stalls)",
+    ),
+    candidates: int = typer.Option(24, help="model calls per function, at most"),
 ):
     """Write winners to oqed.lock for oqed-cc. Given a project (a directory or
     a git URL) or nothing, optimizes that whole project: writes oqed.toml with
@@ -393,7 +398,7 @@ def optimize(
                 chosen,
                 get_provider("spark-contributor"),
                 get_provider("wonder"),
-                SearchConfig(max_usd=max_usd),
+                SearchConfig(max_usd=max_usd, first_wave_reasoning=wonder, candidates=candidates),
                 on_event=_print_event,
                 scanned=None if targets else scanned,
             )
