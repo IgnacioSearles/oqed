@@ -147,7 +147,8 @@ class ScannedFunction(BaseModel):
     name: str  # target name (the function, qualified by file stem on a clash)
     function: str
     location: str  # file:line relative to the project root
-    time: float  # share of the workload's samples in its code
+    time: float  # share of the workload's samples in its code, inlined callees included
+    own: float | None = None  # its own code only; these don't overlap between functions
     skipped: str | None = None  # why oqed can't search it, if it can't
     searched: bool = False  # chosen for this run
 

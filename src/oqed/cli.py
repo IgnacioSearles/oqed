@@ -471,6 +471,7 @@ def scan_summary(sc, chosen: set[str], lock_path: Path) -> dict:
                 "function": f.function,
                 "location": f.location,
                 "time": round(f.time, 5),
+                "own": round(f.own, 5),
                 "skipped": f.skipped,
                 "searched": f.name in chosen,
             }

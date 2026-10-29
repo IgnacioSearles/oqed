@@ -111,6 +111,7 @@ class Function:
     function: str
     location: str  # path relative to the project root, with the line
     time: float = 0.0  # share of the workload's time spent in its code (see `read_time`)
+    own: float = 0.0  # share in its own code only, not what was inlined into it (see `read_times`)
     target: Path | None = None  # set when oqed can search it
     oracle: str = "harness"  # "project" when judged by the project's test command
     skipped: str | None = None  # why not, otherwise
@@ -172,7 +173,17 @@ def record(project: Project) -> Path:
 
 
 def read_time(path: Path) -> dict[str, float]:
-    """Share of the workload's time per function, over every process that
+    return read_times(path)[0]
+
+
+def read_times(path: Path) -> tuple[dict[str, float], dict[str, float]]:
+    """(time, own) per function. `own` is the share of samples whose innermost
+    inlined frame is the function: its own code wherever it ended up. Every
+    sample has one innermost frame, so these don't overlap and sum to at most 1
+    (the treemap's areas); `time` overlaps between a function and what was
+    inlined into it.
+
+    Share of the workload's time per function, over every process that
     wrote a section of the profile. A function's share is the larger of:
 
     - the samples in its symbol's address range: its own code plus whatever
@@ -184,7 +195,7 @@ def read_time(path: Path) -> dict[str, float]:
     Shares are of all samples, including time in libraries and blocked."""
     sections: list[tuple[str, int, list[tuple[int, int]]]] = []
     if not path.exists():
-        return {}
+        return {}, {}
     for line in path.read_text().splitlines():
         key, _, value = line.partition(" ")
         if key == "exe":
@@ -209,8 +220,11 @@ def read_time(path: Path) -> dict[str, float]:
             by_symbol[name] = by_symbol.get(name, 0) + n  # type: ignore[index]
             if inner:
                 by_inline[inner] = by_inline.get(inner, 0) + n
+    if not total:
+        return {}, {}
     names = set(by_symbol) | set(by_inline)
-    return {f: max(by_symbol.get(f, 0), by_inline.get(f, 0)) / total for f in names} if total else {}
+    time = {f: max(by_symbol.get(f, 0), by_inline.get(f, 0)) / total for f in names}
+    return time, {f: n / total for f, n in by_inline.items()}
 
 
 def _innermost(exe: Path, addrs: list[int]) -> list[str | None]:
@@ -541,7 +555,7 @@ def slice_sha(src: str, root: Path) -> str:
 
 
 def discover(project: Project, rec: Path) -> Scan:
-    time = read_time(rec / "profile.txt")
+    time, own = read_times(rec / "profile.txt")
     targets_dir = project.state / "targets"
     shutil.rmtree(targets_dir, ignore_errors=True)
     targets_dir.mkdir(parents=True)
@@ -579,7 +593,9 @@ def discover(project: Project, rec: Path) -> Scan:
     for unit, d, file, line, hashed in seen.values():
         fn = d["name"]
         name = fn if names.count(fn) == 1 else f"{fn}.{file.stem}"
-        f = Function(name, fn, f"{file.relative_to(project.root)}:{line}", time.get(fn, 0.0))
+        f = Function(
+            name, fn, f"{file.relative_to(project.root)}:{line}", time.get(fn, 0.0), own.get(fn, 0.0)
+        )
         scan.functions.append(f)
         if fn == "main":
             f.skipped = "main"

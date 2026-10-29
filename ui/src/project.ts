@@ -23,6 +23,10 @@ export interface Tile {
   lastCaught: number | null; // when a wrong or ABI-breaking candidate was last rejected
 }
 
+/** A function's area on the map: its own code's share when the log has it
+ * (shares including inlined callees overlap and can add up past 100%). */
+export const area = (fn: ScannedFunction) => fn.own ?? fn.time;
+
 /** Rejections that mean the checks caught code that would have been wrong. */
 export const CAUGHT = new Set(["test", "verify", "abi", "inline"]);
 
@@ -68,7 +72,7 @@ export function timeSplit(ts: Tile[]): TimeSplit {
   const s: TimeSplit = { won: 0, nowin: 0, idle: 0, skipped: 0, outside: 0 };
   for (const t of ts) {
     const k = t.state === "won" ? "won" : t.state === "skipped" ? "skipped" : t.state === "idle" ? "idle" : "nowin";
-    s[k] += t.fn.time;
+    s[k] += area(t.fn);
   }
   s.outside = Math.max(0, 1 - s.won - s.nowin - s.idle - s.skipped);
   return s;

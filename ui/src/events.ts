@@ -139,7 +139,8 @@ export interface ScannedFunction {
   name: string;
   function: string;
   location: string; // file:line, relative to the project root
-  time: number; // share of the workload's samples in its code
+  time: number; // share of the workload's samples in its code, inlined callees included
+  own?: number | null; // its own code only: these don't overlap, so they are the map's areas
   skipped: string | null; // why oqed can't search it
   searched: boolean;
 }

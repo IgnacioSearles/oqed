@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ProjectReport, RejectStage } from "../events";
 import { type RunView, fmtUsd, headlineSpeedup, modelLabel, usage } from "../model";
-import { type Tile, type TileState, CAUGHT, pct, tiles as toTiles, timeSplit } from "../project";
+import { type Tile, type TileState, CAUGHT, area, pct, tiles as toTiles, timeSplit } from "../project";
 import type { Replay } from "../replay";
 import { useWidth } from "../useWidth";
 import { Panel } from "./Panel";
@@ -33,8 +33,8 @@ export function ProjectView({
     return c;
   }, [ts]);
   const split = timeSplit(ts);
-  const searchedShare = ts.filter((t) => t.fn.searched).reduce((a, t) => a + t.fn.time, 0);
-  const never = ts.filter((t) => t.fn.time === 0).length;
+  const searchedShare = ts.filter((t) => t.fn.searched).reduce((a, t) => a + area(t.fn), 0);
+  const never = ts.filter((t) => area(t.fn) === 0).length;
   const [whole, setWhole] = useState(false);
 
   return (
@@ -46,7 +46,7 @@ export function ProjectView({
         <Stat
           label="searched this run"
           value={String(run.functions.length || ts.filter((t) => t.fn.searched).length)}
-          note={`hottest first: ${pct(searchedShare)} of the samples`}
+          note={`hottest first: ${pct(searchedShare)} of the samples in their own code`}
         />
         <Stat
           label="won"
@@ -369,7 +369,7 @@ function FunctionTable({ run, tiles, onOpen }: { run: RunView; tiles: Tile[]; on
         <thead>
           <tr className="border-b border-rule-soft text-left text-ink-3">
             <th className="px-2.5 py-1 font-normal">function</th>
-            <th className="px-2.5 py-1 text-right font-normal">samples</th>
+            <th className="px-2.5 py-1 text-right font-normal" title="share of the samples, code inlined into it included">samples</th>
             <th className="px-2.5 py-1 text-right font-normal">tried</th>
             <th className="w-[30%] px-2.5 py-1 font-normal">outcomes</th>
             <th className="px-2.5 py-1 text-right font-normal">result</th>

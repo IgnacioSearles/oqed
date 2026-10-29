@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { type Tile, type TileState, pct } from "../project";
+import { type Tile, type TileState, area, pct } from "../project";
 import { useWidth } from "../useWidth";
 
 // Squarified treemap (Bruls, Huizing, van Wijk): rows of rectangles kept close
@@ -91,10 +91,10 @@ export function Treemap({
   const layout = useMemo(() => {
     if (!width) return { files: [], cells: [] };
     const byFile = new Map<string, Tile[]>();
-    for (const t of tiles) if (t.fn.time > 0) byFile.set(t.file, [...(byFile.get(t.file) ?? []), t]);
-    const inside = tiles.reduce((a, t) => a + t.fn.time, 0);
+    for (const t of tiles) if (area(t.fn) > 0) byFile.set(t.file, [...(byFile.get(t.file) ?? []), t]);
+    const inside = tiles.reduce((a, t) => a + area(t.fn), 0);
     const groups: { value: number; item: { file: string; tiles: Tile[] } | null }[] = [...byFile]
-      .map(([file, ts]) => ({ value: ts.reduce((a, t) => a + t.fn.time, 0), item: { file, tiles: ts } }))
+      .map(([file, ts]) => ({ value: ts.reduce((a, t) => a + area(t.fn), 0), item: { file, tiles: ts } }))
       .sort((a, b) => b.value - a.value);
     const outside = Math.max(0, 1 - inside);
     if (showOutside && outside > 0.005) groups.push({ value: outside, item: null });
@@ -107,14 +107,14 @@ export function Treemap({
         continue;
       }
       const head = g.h > 48 && g.w > 60 ? HEADER : 0;
-      const big = g.item.tiles.filter((t) => t.fn.time >= SMALL || t.state === "won" || t.state === "searching");
+      const big = g.item.tiles.filter((t) => area(t.fn) >= SMALL || t.state === "won" || t.state === "searching");
       const small = g.item.tiles.filter((t) => !big.includes(t));
       const items: { value: number; item: Cell }[] = big
-        .sort((a, b) => b.fn.time - a.fn.time)
-        .map((t) => ({ value: t.fn.time, item: { kind: "fn", tile: t } }));
+        .sort((a, b) => area(b.fn) - area(a.fn))
+        .map((t) => ({ value: area(t.fn), item: { kind: "fn", tile: t } }));
       if (small.length) {
         items.push({
-          value: small.reduce((a, t) => a + t.fn.time, 0),
+          value: small.reduce((a, t) => a + area(t.fn), 0),
           item: { kind: "small", tiles: small, file: g.item.file },
         });
       }
@@ -160,7 +160,7 @@ export function Treemap({
                       ? `${t.tried} tried`
                       : t.state === "nowin"
                         ? "no win"
-                        : pct(t.fn.time)}
+                        : pct(area(t.fn))}
                 </span>
               )}
             </>
@@ -212,7 +212,10 @@ function Tooltip({ cell, x, y, width }: { cell: Cell; x: number; y: number; widt
       <>
         <div className="font-bold text-ink">{t.fn.function}</div>
         <div className="text-ink-3">{t.fn.location}</div>
-        <div className="mt-1 text-ink-2">{pct(t.fn.time)} of the workload's samples</div>
+        <div className="mt-1 text-ink-2">
+          {pct(area(t.fn))} of the samples in its own code
+          {t.fn.own != null && t.fn.time > t.fn.own + 0.001 ? `, ${pct(t.fn.time)} with what was inlined into it` : ""}
+        </div>
         <div className="text-ink-2">
           {STATE_LABEL[t.state]}
           {t.state === "won" && t.speedup ? `: ${t.speedup.toFixed(2)}× on the project benchmark` : ""}
@@ -223,7 +226,7 @@ function Tooltip({ cell, x, y, width }: { cell: Cell; x: number; y: number; widt
       </>
     );
   } else if (cell.kind === "small") {
-    const top = [...cell.tiles].sort((a, b) => b.fn.time - a.fn.time).slice(0, 6);
+    const top = [...cell.tiles].sort((a, b) => area(b.fn) - area(a.fn)).slice(0, 6);
     body = (
       <>
         <div className="font-bold text-ink">
@@ -231,7 +234,7 @@ function Tooltip({ cell, x, y, width }: { cell: Cell; x: number; y: number; widt
         </div>
         {top.map((t) => (
           <div key={t.fn.name} className="text-ink-2">
-            {t.fn.function} · {pct(t.fn.time)}
+            {t.fn.function} · {pct(area(t.fn))}
           </div>
         ))}
       </>
