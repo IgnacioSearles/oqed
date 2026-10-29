@@ -335,3 +335,16 @@ def test_a_rescan_comes_from_the_cache(cxx):
     }
     # Nothing re-parsed or re-checked: every cached result was read, none written.
     assert {f: f.stat().st_mtime_ns for f in cache.rglob("*") if f.is_file()} == files
+
+
+def test_optimize_reuses_the_scan_while_nothing_changed(cxx):
+    p, _ = cxx
+    project.scan(p)
+    sc, why = project.fresh_scan(p)
+    assert sc is not None, why
+    (p.root / "oqed.lock").write_text("")  # the lock doesn't count
+    assert project.fresh_scan(p)[0] is not None
+    src = p.root / "lib.cc"
+    src.write_text(src.read_text())  # touched: scan again
+    sc, why = project.fresh_scan(p)
+    assert sc is None and why == "lib.cc changed since the last scan"

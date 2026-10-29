@@ -365,6 +365,7 @@ def optimize(
     ),
     candidates: int = typer.Option(24, help="model calls per function, at most"),
     tricks: int = typer.Option(3, help="verified wins on similar functions shown in each prompt (0: none)"),
+    rescan: bool = typer.Option(False, help="scan again even if nothing changed since the last scan"),
 ):
     """Write winners to oqed.lock for oqed-cc. Given a project (a directory or
     a git URL) or nothing, optimizes that whole project: writes oqed.toml with
@@ -407,7 +408,13 @@ def optimize(
                 if (last := project.last_scan(project.load(Path(".")))) is not None:
                     scanned = scan_summary(last, {t.name for t in chosen}, lock_path)
         else:
-            sc = project.scan(project.load(Path(".")))
+            proj = project.load(Path("."))
+            sc, why = (None, "--rescan") if rescan else project.fresh_scan(proj)
+            if sc is None:
+                typer.echo(f"scanning ({why})")
+                sc = project.scan(proj)
+            else:
+                typer.echo("reusing the last scan: nothing changed since (--rescan to scan again)")
             _print_scan(sc)
             locked = {e.function for e in lock.load(lock_path)} if lock_path.exists() else set()
             # --top counts the functions still to search, not the ones already locked.

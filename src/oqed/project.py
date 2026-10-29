@@ -1053,10 +1053,47 @@ SCAN_FILE = "scan.json"
 
 def scan(project: Project) -> Scan:
     sc = discover(project, record(project))
-    # Kept so `oqed optimize name ...` can say which project its run belongs to.
+    # Kept so `oqed optimize` can reuse it while nothing changed, and so
+    # `oqed optimize name ...` can say which project its run belongs to.
     rows = [{**vars(f), "target": str(f.target) if f.target else None} for f in sc.functions]
-    (project.root / ".oqed" / SCAN_FILE).write_text(json.dumps(rows) + "\n")
+    doc = {"code": _code_sha(), "functions": rows}
+    (project.root / ".oqed" / SCAN_FILE).write_text(json.dumps(doc) + "\n")
     return sc
+
+
+def _newer(root: Path, than: float) -> Path | None:
+    """A project file modified after `than`: oqed's state, .git and the lock
+    aside (a scan's record build applies no lock entries)."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        top = Path(dirpath) == root
+        dirnames[:] = [d for d in dirnames if not (top and d in (".oqed", ".git"))]
+        for n in filenames:
+            if top and n == "oqed.lock":
+                continue
+            p = Path(dirpath) / n
+            try:
+                if p.stat().st_mtime > than:
+                    return p
+            except OSError:
+                continue
+    return None
+
+
+def fresh_scan(project: Project) -> tuple[Scan | None, str]:
+    """The last scan if it still holds (no project file changed since, same
+    oqed, its targets still there), else None; and why not."""
+    path = project.root / ".oqed" / SCAN_FILE
+    if not path.is_file():
+        return None, "no scan yet"
+    doc = json.loads(path.read_text())
+    if not isinstance(doc, dict) or doc.get("code") != _code_sha():
+        return None, "oqed changed since the last scan"
+    if changed := _newer(project.root, path.stat().st_mtime):
+        return None, f"{changed.relative_to(project.root)} changed since the last scan"
+    sc = last_scan(project)
+    if sc is None or any(f.target is not None and not f.target.is_dir() for f in sc.functions):
+        return None, "the last scan's targets are gone"
+    return sc, ""
 
 
 def last_scan(project: Project) -> Scan | None:
@@ -1064,5 +1101,6 @@ def last_scan(project: Project) -> Scan | None:
     path = project.root / ".oqed" / SCAN_FILE
     if not path.is_file():
         return None
-    rows = json.loads(path.read_text())
+    doc = json.loads(path.read_text())
+    rows = doc["functions"] if isinstance(doc, dict) else doc
     return Scan([Function(**{**r, "target": Path(r["target"]) if r["target"] else None}) for r in rows])
