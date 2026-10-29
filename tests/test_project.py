@@ -458,3 +458,7 @@ def test_a_crashing_test_says_where_it_crashed(tmp_path):
     assert "rdi=0x0" in out.crash and "fault address 0x10" in out.crash
     out, _ = run_test("true", tmp_path)
     assert out.crash is None
+    (tmp_path / "j.c").write_text("int main(void) { ((void (*)(void))0x123456789)(); }\n")
+    subprocess.run(["cc", "-O2", "-o", "j", "j.c"], cwd=tmp_path, check=True)
+    out, _ = run_test("./j", tmp_path)
+    assert "outside the program's code" in out.crash

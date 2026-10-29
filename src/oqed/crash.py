@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPORTER_C = r"""
 #define _GNU_SOURCE
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <link.h>
 #include <signal.h>
@@ -43,11 +44,17 @@ static void report(int sig, siginfo_t *si, void *ctx) {
             ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
             if (n < 0) exe[0] = 0;
             greg_t *r = ((ucontext_t *)ctx)->uc_mcontext.gregs;
+            Dl_info dl = {0};  /* a crash in a library: which one, and in what */
+            int in_lib = dladdr((void *)r[REG_RIP], &dl) && dl.dli_fname && dl.dli_fname[0]
+                && strstr(dl.dli_fname, ".so") && !strstr(dl.dli_fname, "/crash-");
             int len = snprintf(buf, sizeof buf,
-                "sig=%d exe=%s bias=%lx rip=%llx addr=%lx rax=%llx rbx=%llx rcx=%llx rdx=%llx "
+                "sig=%d exe=%s lib=%s sym=%s symoff=%lx bias=%lx rip=%llx addr=%lx "
+                "rax=%llx rbx=%llx rcx=%llx rdx=%llx "
                 "rsi=%llx rdi=%llx rbp=%llx rsp=%llx r8=%llx r9=%llx r10=%llx r11=%llx "
                 "r12=%llx r13=%llx r14=%llx r15=%llx\n",
-                sig, exe, bias, r[REG_RIP], (unsigned long)si->si_addr, r[REG_RAX], r[REG_RBX],
+                sig, exe, in_lib ? dl.dli_fname : "-", in_lib && dl.dli_sname ? dl.dli_sname : "-",
+                in_lib && dl.dli_saddr ? (unsigned long)(r[REG_RIP] - (unsigned long)dl.dli_saddr) : 0,
+                bias, r[REG_RIP], (unsigned long)si->si_addr, r[REG_RAX], r[REG_RBX],
                 r[REG_RCX], r[REG_RDX], r[REG_RSI], r[REG_RDI], r[REG_RBP], r[REG_RSP], r[REG_R8],
                 r[REG_R9], r[REG_R10], r[REG_R11], r[REG_R12], r[REG_R13], r[REG_R14], r[REG_R15]);
             if (len > 0) write(fd, buf, len < (int)sizeof buf ? len : (int)sizeof buf - 1);
@@ -107,7 +114,11 @@ def describe(crash_file: Path) -> str | None:
         sig, rip, bias = int(f["sig"]), int(f["rip"], 16), int(f["bias"], 16)
     except (KeyError, ValueError):
         return None
-    where, ins = _locate(f.get("exe", ""), rip - bias)
+    if f.get("lib", "-") != "-":  # in a library the candidate called, with bad arguments most likely
+        sym = f"{f['sym']}+{int(f.get('symoff', '0'), 16):#x}" if f.get("sym", "-") != "-" else "a function"
+        where, ins = f"{sym} in {Path(f['lib']).name}, called by the code", ""
+    else:
+        where, ins = _locate(f.get("exe", ""), rip - bias)
     regs = ", ".join(f"{r}={int(f[r], 16):#x}" for r in _REGS if r in f)
     head = f"{SIGNALS.get(sig, f'signal {sig}')} at {where}"
     if ins:
@@ -121,16 +132,21 @@ def _locate(exe: str, offset: int) -> tuple[str, str]:
     """The symbol+offset and the instruction at an offset into the program."""
     if not exe or not Path(exe).exists():
         return f"{offset:#x}", ""
-    syms = subprocess.run(["nm", "-n", "--defined-only", exe], capture_output=True, text=True, check=False)
-    where = f"{offset:#x}"
+    syms = subprocess.run(
+        ["nm", "-n", "-S", "--defined-only", exe], capture_output=True, text=True, check=False
+    )
+    where = None
     for ln in syms.stdout.splitlines():
         parts = ln.split()
-        if len(parts) != 3 or parts[1].lower() not in "tw":
+        if len(parts) != 4 or parts[2] not in "tTwW":
             continue
-        addr = int(parts[0], 16)
-        if addr > offset:
-            break
-        where = f"{parts[2]}+{offset - addr:#x}"
+        addr, size = int(parts[0], 16), int(parts[1], 16)
+        if addr <= offset < addr + size:
+            where = f"{parts[3]}+{offset - addr:#x}"
+    if where is None:
+        # A jump or ret to a bad address: most often rsp off at `ret`, so it
+        # popped something that isn't the return address.
+        return "an address outside the program's code (a jump or ret to a bad address)", ""
     dis = subprocess.run(
         [
             "objdump",

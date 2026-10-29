@@ -97,8 +97,10 @@ class SearchState:
 def target_context(
     target: Target, baselines: list[BaselineInfo], mca_report: str, latency_note: str = ""
 ) -> str:
+    # A project slice keeps a blank line for every preprocessor line and comment it dropped.
+    source = re.sub(r"\n(?:[ \t]*\n){2,}", "\n\n", target.c_source.strip())
     parts = [
-        f"Function to optimize:\n```{'cpp' if target.lang == 'c++' else 'c'}\n{target.c_source.strip()}\n```",
+        f"Function to optimize:\n```{'cpp' if target.lang == 'c++' else 'c'}\n{source}\n```",
         f"Signature: `{c_signature(target)}`. {_type_notes(target)}",
     ]
     if target.lang == "c++":

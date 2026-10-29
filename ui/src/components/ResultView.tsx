@@ -94,8 +94,10 @@ export function ResultView({ fn, unit }: { fn: FunctionView; unit?: string }) {
   ];
 
   const nCols = listings.cols.length + (best ? 1 : 0);
-  const sourceLines = fn.source.trim().split("\n");
-  const defStart = fn.project ? definitionStart(fn.source.trim(), fn.id.split(".")[0]) : 0;
+  // A project slice keeps a blank line for every preprocessor line and comment it dropped.
+  const source = fn.source.trim().replace(/\n(?:[ \t]*\n){2,}/g, "\n\n");
+  const sourceLines = source.split("\n");
+  const defStart = fn.project ? definitionStart(source, fn.id.split(".")[0]) : 0;
 
   return (
     <div className="space-y-1.5">
