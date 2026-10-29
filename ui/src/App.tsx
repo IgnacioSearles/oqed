@@ -40,7 +40,11 @@ export default function App() {
   const [runs, setRuns] = useState<RunIndexEntry[]>([]);
   const [runId, setRunId] = useState<string | undefined>(readHash().run);
   const [fnId, setFnId] = useState<string | undefined>(readHash().fn);
-  const [chosenView, setView] = useState<View | undefined>(readHash().view);
+  // A plain visit opens on the projects table; a link to a run opens that run.
+  const [chosenView, setView] = useState<View | undefined>(() => {
+    const h = readHash();
+    return h.view ?? (h.run ? undefined : "projects");
+  });
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(() => (document.documentElement.dataset.theme as Theme) ?? "light");
