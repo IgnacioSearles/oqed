@@ -42,10 +42,14 @@ class LockEntry(BaseModel):
     # C++: `ns::Class::name`, so overloads and same-named methods of other
     # classes are told apart (with the signature). None in C.
     qualified: str | None = None
+    # C++: the mangled symbol, which tells overloads apart where the signature
+    # can't (references are pointers: `Compare(const Slice&, const Slice&)` and
+    # `Compare(const InternalKey&, const InternalKey&)` look the same).
+    symbol: str | None = None
 
     @property
     def key(self) -> str:
-        return self.qualified or self.function
+        return self.symbol or self.qualified or self.function
 
 
 def _toml_str(s: str) -> str:
@@ -68,6 +72,7 @@ def dumps(entries: list[LockEntry]) -> str:
             "[[entry]]",
             f"function = {_toml_str(e.function)}",
             *([f"qualified = {_toml_str(e.qualified)}"] if e.qualified else []),
+            *([f"symbol = {_toml_str(e.symbol)}"] if e.symbol else []),
             f"args = [{', '.join(_toml_str(a) for a in e.args)}]",
             f"ret = {_toml_str(e.ret)}",
             f"march = {_toml_str(e.march)}",

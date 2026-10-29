@@ -233,6 +233,7 @@ def find_definition(
     flags: list[str] = (),  # type: ignore[assignment]
     want: tuple[list[str], str] | None = None,
     qualified: str | None = None,
+    symbol: str | None = None,
 ) -> Definition | str:
     """The function's definition in a preprocessed file, or why it can't be
     used. In C++ the one with this qualified name and signature (`want`:
@@ -243,6 +244,8 @@ def find_definition(
     for d in _ast(path, qualified or name, xflags):
         if d.get("kind") not in _FUNCTIONS or d.get("name") != name:
             continue
+        if symbol and d.get("mangledName", symbol) != symbol:
+            continue  # another overload
         body = next((x for x in d.get("inner", []) if x.get("kind") == "CompoundStmt"), None)
         if body is None:
             continue  # a prototype
@@ -484,7 +487,7 @@ def _build(cc: str, cmd: Command, ipath: Path, lang: str = "c") -> Build:
 
 
 def _find(b: Build, e: lock.LockEntry) -> Definition | str:
-    return find_definition(b.path, e.function, b.lang, b.flags, (e.args, e.ret), e.qualified)
+    return find_definition(b.path, e.function, b.lang, b.flags, (e.args, e.ret), e.qualified, e.symbol)
 
 
 def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> tuple[str, str]:
@@ -530,7 +533,7 @@ def _prove(sub: Substitution, original: Compiled, rewritten: Compiled) -> tuple[
 
 
 def _slice_sha(cc: str, cmd: Command, src: str, ipath: Path, function: str, root: Path) -> str | None:
-    # `function`: the lock entry's key (its qualified name in C++)
+    # `function`: the lock entry's key (its mangled symbol or qualified name in C++)
     """The same hash `oqed scan` records for a function: its definition and
     the project declarations it uses, as clang preprocesses the file."""
     from . import project
@@ -586,7 +589,8 @@ def process_source(cc: str, cmd: Command, src: str, entries: list[lock.LockEntry
         with open(applied, "a") as f:
             f.writelines(f"{fn}\n" for fn in decision["kept"])
             # C++: the oracle looks for the plain name too
-            f.writelines(f"{fn.rsplit('::', 1)[-1]}\n" for fn in decision["kept"] if "::" in fn)
+            plain = [e.function for e in wanted if e.key in decision["kept"] and e.key != e.function]
+            f.writelines(f"{fn}\n" for fn in plain)
     if not decision["kept"]:
         return None
     build = _build(cc, cmd, ipath, source_lang(src))

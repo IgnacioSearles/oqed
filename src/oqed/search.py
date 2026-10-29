@@ -803,6 +803,7 @@ class FunctionSearch:
             oracle="project",
             slice_sha=t.slice_sha,
             qualified=t.qualified,
+            symbol=t.symbol if t.lang == "c++" else None,
         )
         t0 = time.perf_counter()
         try:

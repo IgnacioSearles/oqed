@@ -470,6 +470,7 @@ def optimize(
                 oracle=t.oracle,
                 slice_sha=t.slice_sha if t.oracle == "project" else None,
                 qualified=t.qualified,
+                symbol=t.symbol if t.lang == "c++" else None,
             )
         )
         flag = "" if st == "proven" else ", UNSAFE: tested only"

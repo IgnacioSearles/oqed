@@ -446,8 +446,8 @@ class _Unit:
         return f"{rec.get('__qualified', rec.get('name', ''))}::{name}"
 
     def find(self, key: str) -> _Fn | None:
-        """A definition by name (C) or qualified name (C++)."""
-        return next(
+        """A definition by name (C), or by mangled symbol or qualified name (C++)."""
+        return next((f for f in self.functions if f.symbol == key and "::" not in key), None) or next(
             (f for f in self.functions if key in (f.qualified, f.name) and f.qualified == key), None
         ) or next((f for f in self.functions if f.name == key), None)
 
@@ -890,7 +890,7 @@ def discover(project: Project, rec: Path) -> Scan:
             "source": f.location,
             "license": "project",
             "project": str(project.root),
-            "slice_sha": source_sha(hashed, fnd.qualified if cpp else fn, project.root),
+            "slice_sha": source_sha(hashed, fnd.symbol if cpp else fn, project.root),
         }
         if cpp:
             meta |= {"lang": "c++", "symbol": fnd.symbol, "qualified": fnd.qualified}

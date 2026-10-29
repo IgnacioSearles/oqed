@@ -31,6 +31,9 @@ class Coder {
   uint32_t mix(uint32_t x) const;
   bool has(uint32_t x) const { return ((x * 2654435761u) >> 7 & k_) != 0; }
   uint32_t spin(uint32_t x) const noexcept;
+  // Overloads the signature can't tell apart (references are pointers).
+  int near(const Slice& s) const;
+  int near(const Coder& o) const;
  private:
   uint32_t twist(uint32_t x) const { return x * 3 + k_; }
   uint32_t k_;
@@ -63,6 +66,8 @@ class Coder::Table {
 uint32_t probe(uint32_t x) { return Coder::Table().lookup(x); }
 uint32_t Coder::mix(uint32_t x) const { return rot(x ^ k_) * 0x9e3779b1u; }
 uint32_t Coder::spin(uint32_t x) const noexcept { return twist(x) ^ x; }
+int Coder::near(const Slice& s) const { return int(s.size_ ^ k_) * 3 + 1; }
+int Coder::near(const Coder& o) const { return int(o.k_ - k_) * 5 + 2; }
 uint32_t hot(uint32_t x) {
   return x < 16 ? x * 3 : (x < 256 ? x * 5 + 1 : (x < 65536 ? x * 7 + 2 : x * 9 + 3));
 }
@@ -88,6 +93,9 @@ int main(int argc, char** argv) {
   for (uint32_t i = 0; i < 20000000; i++) {
     acc += demo::hot(i * 2654435761u >> (i & 31)) + c.mix(i) + c.has(i) + demo::hot(i, acc);
     acc += demo::align(i) + demo::probe(i) + c.spin(i);
+    demo::Slice si{"abc", i & 255};
+    demo::Coder ci(i);
+    acc += c.near(si) + c.near(ci);
     lens += demo::varlen((uint64_t)i * i) + demo::total(s, i & 7);
     if ((i & 1023) == 0) out.clear();
     demo::put(&out, i);
@@ -123,6 +131,12 @@ SPIN = """\tpush rbx
 \tcall _ZNK4demo5Coder5twistEj
 \txor eax, ebx
 \tpop rbx
+\tret
+"""
+# Coder::near(const Slice&): `this` in rdi, &s in rsi (size_ at offset 8).
+NEAR = """\tmov eax, dword ptr [rsi+8]
+\txor eax, dword ptr [rdi]
+\tlea eax, [rax+rax*2+1]
 \tret
 """
 # put as a whole function: encode into a stack buffer, then call std::string::append.
@@ -185,7 +199,11 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     assert by["put"].time > 0.05  # sampled by mangled symbol
     # A method takes `this` and reads memory; a reference is a pointer.
     assert by["mix"].oracle == by["has"].oracle == by["put"].oracle == "project"
-    assert by["varlen"].oracle == "harness" and by["varlen"].location == "lib.h:24"
+    assert (
+        by["varlen"].oracle == "harness"
+        and by["varlen"].location
+        == f"lib.h:{LIB_H.splitlines().index('inline int varlen(uint64_t v) {') + 1}"
+    )
     mix = load_target(by["mix"].target)
     assert (mix.lang, mix.symbol, mix.qualified, mix.args, mix.ret) == (
         "c++", "_ZNK4demo5Coder3mixEj", "demo::Coder::mix", ["u64", "u32"], "u32"
@@ -204,8 +222,9 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
 
 def _entry(t, asm, status):
     return lock.LockEntry(
-        function=t.function, qualified=t.qualified, args=t.args, ret=t.ret, march="x86-64-v3", asm=asm,
-        status=status, speedup=1.0, benchmark=t.name, run="test", candidate="test", oracle=t.oracle,
+        function=t.function, qualified=t.qualified, symbol=t.symbol, args=t.args, ret=t.ret,
+        march="x86-64-v3", asm=asm, status=status, speedup=1.0, benchmark=t.name, run="test",
+        candidate="test", oracle=t.oracle,
         slice_sha=t.slice_sha if t.oracle == "project" else None,
     )  # fmt: skip
 
@@ -238,11 +257,17 @@ def test_oqed_cxx_substitutes_proves_and_guards_exceptions(cxx, cc):
     run = lambda: subprocess.run(["./app"], cwd=root, capture_output=True, text=True, check=True).stdout  # noqa: E731
     want = run()
     t = {n: load_target(by[n].target) for n in ("varlen", "mix", "put", "spin")}
+    t["near"] = next(
+        x
+        for f in by.values()
+        if f.target and (x := load_target(f.target)).symbol == "_ZNK4demo5Coder4nearERKNS_5SliceE"
+    )
     entries = [
         _entry(t["varlen"], VARLEN, "tested"),
         _entry(t["mix"], MIX, "tested"),
         _entry(t["put"], PUT, "tested"),
         _entry(t["spin"], SPIN, "tested"),
+        _entry(t["near"], NEAR, "tested"),
     ]
     (root / "oqed.lock").write_text(lock.dumps(entries))
     err = _build(root, "-I.", "-Werror", cc=cc)  # flags the preprocessed file leaves unused
@@ -250,6 +275,9 @@ def test_oqed_cxx_substitutes_proves_and_guards_exceptions(cxx, cc):
     assert "varlen: UNSAFE: substituted on testing only (proof unknown" in err, err
     assert "mix: UNSAFE: substituted on testing only" in err, err
     assert "spin: UNSAFE: substituted on testing only" in err, err
+    # The overload the entry was found for, and only that one.
+    assert err.count("near: UNSAFE: substituted on testing only") == 1, err
+    assert "definitions named" not in err, err
     # put calls std::string::append, which may throw through the asm.
     assert "put: kept C (calls out and may unwind through the asm" in err, err
     assert run() == want
