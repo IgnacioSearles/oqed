@@ -317,7 +317,7 @@ def test_build_and_run_are_enough(oracle_proj, monkeypatch):
         v, cyc, base, _ = asyncio.run(judge("\tmov eax, dword ptr [rdi]\n\tret\n"))
         assert v.ok and cyc.median > 0 and base.median > 0
         v, _, _, _ = asyncio.run(judge("\txor eax, eax\n\tmov eax, dword ptr [rax]\n\tret\n"))
-        assert not v.ok and v.stage == "test" and "exited with" in v.reason
+        assert not v.ok and v.stage == "test" and "crashed: SIGSEGV at load_le32" in v.reason
     finally:
         o.close()
 
@@ -443,3 +443,18 @@ def test_paired_runs_stop_once_the_sign_test_is_lost():
     assert bench([10, 11, 10, 9, 10, 12]) == (3, 1)
     # A candidate that keeps winning runs all 7.
     assert bench([10, 9] * 7) == (7, 7)
+
+
+def test_a_crashing_test_says_where_it_crashed(tmp_path):
+    from oqed.oracle import run_test
+
+    (tmp_path / "t.c").write_text(
+        "__attribute__((noinline)) int peek(int *p, long i) { return p[i]; }\n"
+        "int main(int c, char **v) { return peek(0, c * 4); }\n"
+    )
+    subprocess.run(["cc", "-O2", "-o", "t", "t.c"], cwd=tmp_path, check=True)
+    out, _ = run_test("./t", tmp_path)
+    assert out.crash.startswith("SIGSEGV at peek+0x")
+    assert "rdi=0x0" in out.crash and "fault address 0x10" in out.crash
+    out, _ = run_test("true", tmp_path)
+    assert out.crash is None

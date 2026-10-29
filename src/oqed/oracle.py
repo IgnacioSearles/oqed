@@ -43,11 +43,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import lock
+from . import crash, lock
 from .events import Cycles
 from .project import Project, cc_env
 
 TEST_TIMEOUT_S = 120
+CACHE = Path(os.environ.get("OQED_CACHE", Path.home() / ".cache" / "oqed"))
 SIGN_TEST_P = 0.07
 
 
@@ -61,9 +62,15 @@ def wins_needed(runs: int) -> int:
 
 
 def run_test(command: str, tree: Path) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
-    """Run the test command; also the hash of every file it created or changed."""
+    """Run the test command; also the hash of every file it created or changed.
+    `out.crash` says where it crashed, if it did (see crash.py)."""
     before = _mtimes(tree)
-    out = _run(command, tree, timeout=TEST_TIMEOUT_S)
+    env = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        if lib := crash.reporter(CACHE / "crash"):
+            env = {"LD_PRELOAD": str(lib), "OQED_CRASH_FILE": f"{tmp}/crash"}
+        out = _run(command, tree, env, timeout=TEST_TIMEOUT_S)
+        out.crash = crash.describe(Path(tmp) / "crash") if env and out.returncode else None
     written = {}
     for rel, m in _mtimes(tree).items():
         if before.get(rel) != m:
@@ -219,6 +226,8 @@ class ProjectOracle:
             out, written = run_test(self.project.test_command, tree)
         except subprocess.TimeoutExpired:
             return Verdict(False, f"project test timed out after {TEST_TIMEOUT_S}s", "test")
+        if out.returncode != 0 and out.crash:
+            return Verdict(False, f"project test crashed: {out.crash}", "test")
         if out.returncode != 0:
             return Verdict(
                 False, f"project test exited with {out.returncode}: {out.stderr.strip()[-300:]}", "test"
