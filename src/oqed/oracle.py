@@ -248,11 +248,19 @@ class ProjectOracle:
         return measure(self.project, tree)
 
     def _bench(self, tree: Path) -> tuple[Cycles, Cycles, int]:
+        """Paired runs, stopped as soon as the candidate has lost too many to
+        win the sign test (most candidates aren't faster): same verdicts,
+        and the machine is free again sooner."""
+        runs = self.project.bench_runs
+        can_lose = runs - wins_needed(runs)
         cand, base = [], []
-        for _ in range(self.project.bench_runs):
+        wins = 0
+        for _ in range(runs):
             base.append(self._number(self.base))
             cand.append(self._number(tree))
-        wins = sum(c < b for c, b in zip(cand, base, strict=True))
+            wins += cand[-1] < base[-1]
+            if len(cand) - wins > can_lose:
+                break
         return _cycles(cand), _cycles(base), wins
 
     async def baseline(self, bench_lock: BenchLock) -> Cycles:

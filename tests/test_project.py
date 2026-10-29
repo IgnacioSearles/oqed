@@ -423,3 +423,23 @@ def test_candidates_that_break_the_abi_go_back_with_the_rules(oracle_proj, tmp_p
     assert next(e for e in events if e.type == "candidate_rejected").stage == "abi"
     assert "returns with the stack not restored" in asked[1]
     assert [e.candidate_id[-1] for e in events if e.type == "candidate_proposed"][1] == "r"
+
+
+def test_paired_runs_stop_once_the_sign_test_is_lost():
+    from types import SimpleNamespace
+
+    from oqed.oracle import ProjectOracle
+
+    def bench(numbers):
+        o = ProjectOracle.__new__(ProjectOracle)
+        o.project = SimpleNamespace(bench_runs=7)  # 6 wins needed: 2 losses and it can't
+        o.base = "base"
+        it, calls = iter(numbers), []
+        o._number = lambda tree: calls.append(tree) or next(it)
+        _, _, wins = o._bench("cand")
+        return len(calls) // 2, wins
+
+    # (base, candidate) per pair: a loss, a win, a loss -> stopped after 3 pairs.
+    assert bench([10, 11, 10, 9, 10, 12]) == (3, 1)
+    # A candidate that keeps winning runs all 7.
+    assert bench([10, 9] * 7) == (7, 7)

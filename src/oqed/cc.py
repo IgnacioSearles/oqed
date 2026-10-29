@@ -45,6 +45,7 @@ sampling profiler (`profile_rt.c`).
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import json
 import os
@@ -471,6 +472,7 @@ def _compile_s(cc: str, flags: list[str], remark_flags: list[str], path: Path) -
     return Compiled(out.read_text(), vec)
 
 
+@functools.cache
 def _is_clang(cc: str) -> bool:
     return "clang" in _run([cc, "--version"]).stdout
 
