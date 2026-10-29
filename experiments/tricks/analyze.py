@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-RUNS = HERE.parents[1] / "runs"
+RUNS = HERE / "runs"  # copies of the four runs (runs/ is not committed)
 
 
 def per_function(run_id: str) -> dict[str, dict]:
