@@ -1,0 +1,54 @@
+[
+  {
+    "compiler": "clang",
+    "lock": "all",
+    "entries": 2,
+    "applied": 2,
+    "kept_c": [],
+    "plain": 3048.626,
+    "oqed": 2601.824,
+    "speedup": 1.172,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "compiler": "clang",
+    "lock": "longest_match",
+    "entries": 1,
+    "applied": 1,
+    "kept_c": [],
+    "plain": 3011.215,
+    "oqed": 2604.246,
+    "speedup": 1.156,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "compiler": "gcc",
+    "lock": "all",
+    "entries": 2,
+    "applied": 2,
+    "kept_c": [],
+    "plain": 2955.381,
+    "oqed": 2581.726,
+    "speedup": 1.145,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "compiler": "gcc",
+    "lock": "longest_match",
+    "entries": 1,
+    "applied": 1,
+    "kept_c": [],
+    "plain": 3082.241,
+    "oqed": 2692.752,
+    "speedup": 1.145,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  }
+]

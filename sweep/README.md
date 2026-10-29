@@ -9,7 +9,7 @@ oqed-cc build, same test result and output files, 11 alternating runs.
 | library | commit | init | hottest function (share of the workload) | searched | spend | whole program |
 |---|---|---|---|---|---|---|
 | protobuf-c (v1.5.1 testbed, `projects/protobuf_c`) | - | hand-written config | `protobuf_c_message_get_packed_size` (31% with what is inlined into it) | top 16, Muse Wonder writes 1 of each first wave | $14.68 | **1.269x**, faster in 11 of 11 runs, coverage-test output identical (7 entries: 2 proven, 5 tested). The 2 proven entries alone: **1.171x**, 11 of 11. With gcc: **1.320x** (proven alone 1.125x), 11 of 11, all 7 applied (`compilers.py`) |
-| zlib | 71747d1 | 3 attempts, $0.003 | `longest_match` (88%) | top 3 | $0.35 | **1.026x**, faster in 11 of 11 runs, outputs identical (1 tested entry) |
+| zlib | 71747d1 | 3 attempts, $0.003 | `longest_match` (88%) | top 3, then top 6 deep (40 candidates each, Muse Wonder on stalls), then `deflate_slow` and `inflate_fast` again | $15.85 | **1.172x** with clang, **1.145x** with gcc, faster in 11 of 11 runs, output files identical (2 tested entries; `longest_match` alone 1.156x and 1.145x) ([zlib](zlib/README.md)) |
 | cJSON | 6d9f244 | 2 attempts, $0.004 | `parse_string` (3%); the library's own code is ~25% of the workload, the rest is libc (`sprintf`/`strtod` for doubles) | top 6 | $0.85 | **1.072x**, faster in 11 of 11 runs, output hash identical (3 tested entries) |
 | libyaml | 90a56d4 | 4 attempts, $0.005 (driver and input generator written as files) | `yaml_parser_fetch_plain_scalar` (19%) | top 8 | $2.43 | no win: 99 candidates, 31 correct but not faster; the hot code is in scanner functions of 300-1,500 instructions |
 | LevelDB (C++, `CXX=oqed-cxx`) | bb74ef7 | hand-written driver | `DecodeEntry` (4.9%); a third of the samples are LevelDB's own code | top 8, then `Extend` again | $2.41 | **1.046x** with clang++, faster in 10 of 11 runs, output identical (1 tested entry, `BytewiseComparatorImpl::Compare`); none with g++ (0.993x). Three other accepted entries didn't hold up when re-checked ([leveldb](leveldb/README.md)) |
@@ -17,6 +17,13 @@ oqed-cc build, same test result and output files, 11 alternating runs.
 
 What the sweep caught along the way:
 
+- zlib, deep run: most candidates for `deflate_slow`, `inflate_fast` and
+  `compress_block` (300+ instructions, calls into the rest of zlib)
+  segfaulted, and all the model heard was "Segmentation fault". The struct
+  layouts the code reads now go in the prompt, and a crashing test reports the
+  signal, the faulting instruction, the fault address and the registers
+  (`SIGSEGV at inflate_fast+0x7c: movzx eax,BYTE PTR [r14] (fault address
+  0x7e328185)`: a pointer cut to 32 bits). Those functions still gave no win.
 - zlib, first run: a `longest_match` that finds shorter matches. The round
   trip passed, the program was 1.63x faster, and the `.gz` came out 0.6%
   larger. The project oracle now compares every file the test writes with the

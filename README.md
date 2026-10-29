@@ -8,7 +8,7 @@ Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
 **Live UI with the curated runs: [ignaciosearles.github.io/oqed](https://ignaciosearles.github.io/oqed/)**
 
-> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. Pointed at a whole project with no functions picked, `oqed optimize` makes protobuf-c's size + pack workload 1.269× faster with clang and 1.320× with gcc (7 functions replaced, 2 of them proven; the proven ones alone give 1.171× and 1.125×; on packing workloads the search never saw, 1.10–1.21×, of which a few percent is code layout), cJSON 1.072× and zlib 1.026×, with identical output in every case (`sweep/`). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. Pointed at a whole project with no functions picked, `oqed optimize` makes protobuf-c's size + pack workload 1.269× faster with clang and 1.320× with gcc (7 functions replaced, 2 of them proven; the proven ones alone give 1.171× and 1.125×; on packing workloads the search never saw, 1.10–1.21×, of which a few percent is code layout), zlib 1.172× with clang and 1.145× with gcc (`longest_match`, 88% of its time, rewritten by Muse Wonder), cJSON 1.072×, with identical output in every case (`sweep/`). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 

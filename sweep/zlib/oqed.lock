@@ -7,104 +7,523 @@
 version = 1
 
 [[entry]]
+function = "crc32_z"
+args = ["u64", "u64", "u64"]
+ret = "u64"
+march = "x86-64-v3"
+status = "tested"
+speedup = 1.04
+benchmark = "crc32_z"
+run = "20261029-211715-85ed"
+candidate = "crc32_z-004r"
+oracle = "project"
+slice_sha = "dd5668ac1cd0720ab4ec8c8ebf79407b14d44aa4b4ecdda49eeb1dddeda8f50b"
+asm = """
+	test rsi, rsi
+	je .Lzero
+	mov eax, edi
+	not eax
+	cmp rdx, 47
+	jb .Ltail_init
+	mov r8d, eax
+	mov r9, rsi
+	neg r9
+	and r9d, 7
+	cmp r9, rdx
+	cmova r9, rdx
+	sub rdx, r9
+	test r9, r9
+	je .Laligned
+	lea r10, [rip + crc_table]
+.Lalign_loop:
+	movzx ecx, byte ptr [rsi]
+	inc rsi
+	xor cl, r8b
+	shr r8d, 8
+	xor r8d, dword ptr [r10 + rcx*4]
+	dec r9
+	jne .Lalign_loop
+.Laligned:
+	mov rax, rdx
+	mov ecx, 40
+	xor edx, edx
+	div rcx
+	mov rcx, rax
+	test rcx, rcx
+	je .Ltail_init2
+	push rbx
+	push r12
+	mov r12, rdx
+	lea rdi, [rip + crc_braid_table]
+	mov r9d, 0
+	mov r10d, 0
+	mov r11d, 0
+	mov ebx, 0
+	dec rcx
+	je .Lfinal
+.Lbraid:
+	mov rax, qword ptr [rsi]
+	xor rax, r8
+	movzx edx, al
+	mov r8d, dword ptr [rdi + rdx*4]
+	shr rax, 8
+	movzx edx, al
+	xor r8d, dword ptr [rdi + rdx*4 + 1024]
+	shr rax, 8
+	movzx edx, al
+	xor r8d, dword ptr [rdi + rdx*4 + 2048]
+	shr rax, 8
+	movzx edx, al
+	xor r8d, dword ptr [rdi + rdx*4 + 3072]
+	shr rax, 8
+	movzx edx, al
+	xor r8d, dword ptr [rdi + rdx*4 + 4096]
+	shr rax, 8
+	movzx edx, al
+	xor r8d, dword ptr [rdi + rdx*4 + 5120]
+	shr rax, 8
+	movzx edx, al
+	xor r8d, dword ptr [rdi + rdx*4 + 6144]
+	shr rax, 8
+	movzx edx, al
+	xor r8d, dword ptr [rdi + rdx*4 + 7168]
+	mov rax, qword ptr [rsi + 8]
+	xor rax, r9
+	movzx edx, al
+	mov r9d, dword ptr [rdi + rdx*4]
+	shr rax, 8
+	movzx edx, al
+	xor r9d, dword ptr [rdi + rdx*4 + 1024]
+	shr rax, 8
+	movzx edx, al
+	xor r9d, dword ptr [rdi + rdx*4 + 2048]
+	shr rax, 8
+	movzx edx, al
+	xor r9d, dword ptr [rdi + rdx*4 + 3072]
+	shr rax, 8
+	movzx edx, al
+	xor r9d, dword ptr [rdi + rdx*4 + 4096]
+	shr rax, 8
+	movzx edx, al
+	xor r9d, dword ptr [rdi + rdx*4 + 5120]
+	shr rax, 8
+	movzx edx, al
+	xor r9d, dword ptr [rdi + rdx*4 + 6144]
+	shr rax, 8
+	movzx edx, al
+	xor r9d, dword ptr [rdi + rdx*4 + 7168]
+	mov rax, qword ptr [rsi + 16]
+	xor rax, r10
+	movzx edx, al
+	mov r10d, dword ptr [rdi + rdx*4]
+	shr rax, 8
+	movzx edx, al
+	xor r10d, dword ptr [rdi + rdx*4 + 1024]
+	shr rax, 8
+	movzx edx, al
+	xor r10d, dword ptr [rdi + rdx*4 + 2048]
+	shr rax, 8
+	movzx edx, al
+	xor r10d, dword ptr [rdi + rdx*4 + 3072]
+	shr rax, 8
+	movzx edx, al
+	xor r10d, dword ptr [rdi + rdx*4 + 4096]
+	shr rax, 8
+	movzx edx, al
+	xor r10d, dword ptr [rdi + rdx*4 + 5120]
+	shr rax, 8
+	movzx edx, al
+	xor r10d, dword ptr [rdi + rdx*4 + 6144]
+	shr rax, 8
+	movzx edx, al
+	xor r10d, dword ptr [rdi + rdx*4 + 7168]
+	mov rax, qword ptr [rsi + 24]
+	xor rax, r11
+	movzx edx, al
+	mov r11d, dword ptr [rdi + rdx*4]
+	shr rax, 8
+	movzx edx, al
+	xor r11d, dword ptr [rdi + rdx*4 + 1024]
+	shr rax, 8
+	movzx edx, al
+	xor r11d, dword ptr [rdi + rdx*4 + 2048]
+	shr rax, 8
+	movzx edx, al
+	xor r11d, dword ptr [rdi + rdx*4 + 3072]
+	shr rax, 8
+	movzx edx, al
+	xor r11d, dword ptr [rdi + rdx*4 + 4096]
+	shr rax, 8
+	movzx edx, al
+	xor r11d, dword ptr [rdi + rdx*4 + 5120]
+	shr rax, 8
+	movzx edx, al
+	xor r11d, dword ptr [rdi + rdx*4 + 6144]
+	shr rax, 8
+	movzx edx, al
+	xor r11d, dword ptr [rdi + rdx*4 + 7168]
+	mov rax, qword ptr [rsi + 32]
+	xor rax, rbx
+	movzx edx, al
+	mov ebx, dword ptr [rdi + rdx*4]
+	shr rax, 8
+	movzx edx, al
+	xor ebx, dword ptr [rdi + rdx*4 + 1024]
+	shr rax, 8
+	movzx edx, al
+	xor ebx, dword ptr [rdi + rdx*4 + 2048]
+	shr rax, 8
+	movzx edx, al
+	xor ebx, dword ptr [rdi + rdx*4 + 3072]
+	shr rax, 8
+	movzx edx, al
+	xor ebx, dword ptr [rdi + rdx*4 + 4096]
+	shr rax, 8
+	movzx edx, al
+	xor ebx, dword ptr [rdi + rdx*4 + 5120]
+	shr rax, 8
+	movzx edx, al
+	xor ebx, dword ptr [rdi + rdx*4 + 6144]
+	shr rax, 8
+	movzx edx, al
+	xor ebx, dword ptr [rdi + rdx*4 + 7168]
+	add rsi, 40
+	dec rcx
+	jne .Lbraid
+.Lfinal:
+	lea rdi, [rip + crc_table]
+	mov rax, qword ptr [rsi]
+	xor rax, r8
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	xor edx, dword ptr [rdi + rax*4]
+	mov r8d, edx
+	mov rax, qword ptr [rsi + 8]
+	xor rax, r9
+	xor rax, r8
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	xor edx, dword ptr [rdi + rax*4]
+	mov r8d, edx
+	mov rax, qword ptr [rsi + 16]
+	xor rax, r10
+	xor rax, r8
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	xor edx, dword ptr [rdi + rax*4]
+	mov r8d, edx
+	mov rax, qword ptr [rsi + 24]
+	xor rax, r11
+	xor rax, r8
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	xor edx, dword ptr [rdi + rax*4]
+	mov r8d, edx
+	mov rax, qword ptr [rsi + 32]
+	xor rax, rbx
+	xor rax, r8
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	mov eax, dword ptr [rdi + rax*4]
+	xor rax, rdx
+	movzx edx, al
+	shr rax, 8
+	mov edx, dword ptr [rdi + rdx*4]
+	xor rdx, rax
+	movzx eax, dl
+	shr rdx, 8
+	xor edx, dword ptr [rdi + rax*4]
+	mov r8d, edx
+	add rsi, 40
+	mov rdx, r12
+	test rdx, rdx
+	je .Ldone_push
+.Ltail:
+	movzx ecx, byte ptr [rsi]
+	inc rsi
+	xor cl, r8b
+	shr r8d, 8
+	xor r8d, dword ptr [rdi + rcx*4]
+	dec rdx
+	jne .Ltail
+.Ldone_push:
+	mov eax, r8d
+	not eax
+	pop r12
+	pop rbx
+	ret
+.Ltail_init:
+	mov r8d, eax
+	lea rdi, [rip + crc_table]
+	test rdx, rdx
+	je .Ldone_small
+.Ltail_small:
+	movzx ecx, byte ptr [rsi]
+	inc rsi
+	xor cl, r8b
+	shr r8d, 8
+	xor r8d, dword ptr [rdi + rcx*4]
+	dec rdx
+	jne .Ltail_small
+.Ldone_small:
+	mov eax, r8d
+	not eax
+	ret
+.Ltail_init2:
+	lea rdi, [rip + crc_table]
+	test rdx, rdx
+	je .Ldone_small2
+.Ltail_small2:
+	movzx ecx, byte ptr [rsi]
+	inc rsi
+	xor cl, r8b
+	shr r8d, 8
+	xor r8d, dword ptr [rdi + rcx*4]
+	dec rdx
+	jne .Ltail_small2
+.Ldone_small2:
+	mov eax, r8d
+	not eax
+	ret
+.Lzero:
+	xor eax, eax
+	ret
+"""
+
+[[entry]]
 function = "longest_match"
 args = ["u64", "u32"]
 ret = "u32"
 march = "x86-64-v3"
 status = "tested"
-speedup = 1.03
+speedup = 1.17
 benchmark = "longest_match"
-run = "20261028-181053-c4d3"
-candidate = "longest_match-005"
+run = "20261029-211715-85ed"
+candidate = "longest_match-016"
 oracle = "project"
-slice_sha = "2de7471982c7f49c7741e7b4e51324ba399c1540a76981e9602c86a14960a650"
+slice_sha = "af4df3d8b19dadeb41c519d08f33e0f41c58d5c63a89b488624f27e8012459c7"
 asm = """
+	mov esi, esi
 	push rbx
 	push rbp
 	push r12
 	push r13
 	push r14
 	push r15
-	mov esi, esi
-	mov r10, rdi
-	mov r15, qword ptr [r10+96]
-	mov r14, qword ptr [r10+112]
-	mov r8d, dword ptr [r10+188]
-	mov ebx, dword ptr [r10+184]
-	mov eax, dword ptr [r10+204]
-	cmp ebx, eax
-	jb 1f
-	shr r8d, 2
-1:
-	mov ebp, dword ptr [r10+180]
-	mov r11d, dword ptr [r10+208]
-	cmp r11d, ebp
-	cmova r11d, ebp
-	mov r13d, dword ptr [r10+88]
-	mov ecx, dword ptr [r10+80]
-	mov edx, dword ptr [r10+172]
-	lea r9, [r15+rdx]
-	mov eax, ecx
-	sub eax, 262
-	xor r12d, r12d
-	cmp edx, eax
-	jbe 2f
-	mov r12d, edx
-	sub r12d, eax
-2:
-	movzx edi, word ptr [r9]
-3:
-	lea rdx, [r15+rsi]
-	movzx eax, byte ptr [r9+rbx]
-	cmp al, byte ptr [rdx+rbx]
-	jne 7f
-	movzx eax, byte ptr [r9+rbx-1]
-	cmp al, byte ptr [rdx+rbx-1]
-	jne 7f
-	cmp di, word ptr [rdx]
-	jne 7f
-	xor ecx, ecx
-4:
-	mov rax, qword ptr [r9+rcx]
-	xor rax, qword ptr [rdx+rcx]
-	jne 5f
-	add ecx, 8
-	cmp ecx, 256
-	jb 4b
-	movzx eax, word ptr [r9+256]
-	cmp ax, word ptr [rdx+256]
-	je 6f
-	cmp al, byte ptr [rdx+256]
-	sete al
-	movzx ecx, al
-	add ecx, 256
-	jmp 8f
-6:
-	mov ecx, 258
-	jmp 8f
-5:
-	tzcnt rax, rax
-	shr rax, 3
-	add rcx, rax
-8:
-	cmp ecx, ebx
-	jbe 7f
-	mov ebx, ecx
-	mov dword ptr [r10+176], esi
-	cmp ebx, r11d
-	jae 9f
-7:
-	mov ecx, esi
-	and ecx, r13d
-	movzx esi, word ptr [r14+rcx*2]
-	cmp esi, r12d
-	jbe 9f
-	dec r8d
-	jnz 3b
-9:
-	mov eax, ebx
-	cmp eax, ebp
-	cmova eax, ebp
+	sub rsp, 8
+	mov r8, qword ptr [rdi + 96]
+	mov eax, dword ptr [rdi + 172]
+	lea r9, [r8 + rax]
+	movsxd r10, dword ptr [rdi + 184]
+	mov edx, dword ptr [rdi + 180]
+	mov ecx, dword ptr [rdi + 208]
+	cmp ecx, edx
+	cmova ecx, edx
+	mov dword ptr [rsp], ecx
+	mov r15d, dword ptr [rdi + 188]
+	cmp r10d, dword ptr [rdi + 204]
+	jb .LnoShift
+	shr r15d, 2
+.LnoShift:
+	mov ecx, dword ptr [rdi + 80]
+	sub ecx, 262
+	xor edx, edx
+	cmp eax, ecx
+	jbe .LlimDone
+	mov edx, eax
+	sub edx, ecx
+.LlimDone:
+	mov r14d, edx
+	mov r13d, dword ptr [rdi + 88]
+	mov r12, qword ptr [rdi + 112]
+	movzx r11d, word ptr [r9 + r10 - 1]
+.Lcand:
+	mov ebp, esi
+	and ebp, r13d
+	movzx ebp, word ptr [r12 + rbp*2]
+	lea rax, [r8 + rsi]
+	cmp word ptr [rax + r10 - 1], r11w
+	jne .Lnext
+	movzx edx, word ptr [rax]
+	cmp dx, word ptr [r9]
+	jne .Lnext
+	lea rbx, [r9 + 2]
+	lea rax, [rax + 2]
+.Lext:
+	mov rdx, qword ptr [rbx]
+	xor rdx, qword ptr [rax]
+	tzcnt rdx, rdx
+	shr rdx, 3
+	add rbx, rdx
+	add rax, rdx
+	cmp rdx, 8
+	jne .Llen
+	mov rcx, rbx
+	sub rcx, r9
+	cmp ecx, 258
+	jb .Lext
+	mov edx, 258
+	jmp .Lhave
+.Llen:
+	mov rdx, rbx
+	sub rdx, r9
+	mov edx, edx
+	cmp edx, 258
+	jbe .Lhave
+	mov edx, 258
+.Lhave:
+	cmp edx, r10d
+	jle .Lnext
+	mov dword ptr [rdi + 176], esi
+	mov r10d, edx
+	cmp edx, dword ptr [rsp]
+	jge .Lfinish
+	movzx r11d, word ptr [r9 + r10 - 1]
+.Lnext:
+	cmp ebp, r14d
+	jbe .Lfinish
+	dec r15d
+	je .Lfinish
+	mov esi, ebp
+	jmp .Lcand
+.Lfinish:
+	mov edx, dword ptr [rdi + 180]
+	mov eax, r10d
+	cmp r10d, edx
+	cmova eax, edx
+	add rsp, 8
 	pop r15
 	pop r14
 	pop r13
