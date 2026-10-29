@@ -89,7 +89,7 @@ Views: **projects** (every project oqed was pointed at: functions in scope, wins
 src/oqed/      orchestrator: search loop, providers, prompts, testing, toolchain wrappers, ISA check, events, CLI
 harness/       Rust (PyO3) extension: runs and times candidates in a forked, sandboxed child
 benchmarks/    one directory per target: func.c + meta.toml
-projects/      small real projects for end-to-end checks (protobuf-c packing, stb_image decoding)
+projects/      small real projects for end-to-end checks (protobuf-c packing, stb_image decoding, LevelDB encoding)
 tests/         test suite
 experiments/   reproducible experiments with their run logs (trick library)
 sweep/         real open-source projects: configs, locks, reports

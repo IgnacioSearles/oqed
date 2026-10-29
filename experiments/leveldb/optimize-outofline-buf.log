@@ -1,0 +1,308 @@
+32 functions in the project, 17 oqed can search (search order):
+    time  function                         location
+   16.5%  KeyMayMatch                      hash.c:79
+    6.2%  CreateFilter                     hash.c:50
+    4.8%  Hash                             hash.c:4
+    2.2%  PutVarint32                      coding.c:50
+    1.5%  GetLengthPrefixedSlice           coding.c:154
+    0.7%  GetVarint32Ptr                   coding.h:66
+    0.4%  EncodeVarint32                   coding.c:21
+    0.4%  GetVarint32                      coding.c:110
+    0.4%  GetVarint32PtrFallback           coding.c:92
+    0.4%  VarintLength                     coding.c:82
+          BloomHash                        hash.c:38
+          EncodeVarint64                   coding.c:57
+          GetVarint64                      coding.c:141
+          GetVarint64Ptr                   coding.c:123
+          PutFixed32                       coding.c:7
+          PutFixed64                       coding.c:14
+          PutVarint64                      coding.c:69
+busiest functions it can't search yet:
+   23.2%  once                             oqed init's own driver (measures the project, not part of it)
+   11.0%  buf_append                       oqed init's own driver (measures the project, not part of it)
+    5.9%  main                             main
+    5.5%  setup                            oqed init's own driver (measures the project, not part of it)
+    4.4%  fnv                              oqed init's own driver (measures the project, not part of it)
+    2.2%  buf_resize                       oqed init's own driver (measures the project, not part of it)
+    0.7%  PutLengthPrefixedSlice           arguments or result not integers or pointers: void (Buf *, Slice)
+    0.4%  EncodeFixed64                    already minimal (1 instructions)
+[Hash] baseline: clang 124.71
+[KeyMayMatch] baseline: clang 124.70
+[CreateFilter] baseline: clang 124.30
+[Hash] Hash-003 v muse-spark-1.3-contributor (47.4s): Widen block counter and length to 64-bit and keep a minimal 7-uop loop with branchless tail fallthrough.
+[Hash]   121.34 ± 0.41 ticks (x1.017 vs clang, x1.017 vs gcc)
+[Hash]   x benchmark: 121.34 ns/record, not faster than the C build (123.45)
+[Hash] Hash-006 v muse-spark-1.3-contributor (63.2s): Folded setup into word-count/remainder in parallel and kept the serial add-imul-xor chain minimal with branch-minimal tail.
+[Hash]   120.90 ± 0.42 ticks (x1.02 vs clang, x1.02 vs gcc)
+[Hash]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[Hash]   * new best: Hash-006
+[Hash] Hash-004 v muse-spark-1.3-contributor (69.1s): Folded the loop counter to dec/jnz and the tail to two compares with fall-through byte adds.
+[Hash]   121.63 ± 0.58 ticks (x1.014 vs clang, x1.014 vs gcc)
+[Hash]   x benchmark: 121.63 ns/record, not faster than the C build (123.33)
+[Hash] Hash-001 v muse-spark-1.3-contributor (73.7s): Folded tail into one masked dword load and used shr/dec flag-setting to skip test instructions and tighten the dependent chain.
+[Hash]   121.26 ± 0.37 ticks (x1.014 vs clang, x1.014 vs gcc)
+[Hash]   x benchmark: 121.26 ns/record, not faster than the C build (123.02)
+[Hash] Hash-005 v muse-spark-1.3-contributor (85.4s): Count words with shift and share a two-branch fallthrough tail to cut setup and remainder overhead.
+[Hash] Hash-002 v muse-spark-1.3-contributor (86.2s): Use counted pointer loop with LEA limit/tail pointers and word loads for the tail to cut per-iteration overhead.
+[Hash]   122.00 ± 0.43 ticks (x1.015 vs clang, x1.015 vs gcc)
+[Hash]   x benchmark: 122.00 ns/record, not faster than the C build (123.81)
+[Hash]   121.80 ± 0.34 ticks (x1.014 vs clang, x1.014 vs gcc)
+[Hash]   x benchmark: 121.80 ns/record, not faster than the C build (123.47)
+[KeyMayMatch] KeyMayMatch-001 v muse-spark-1.3-contributor (94.6s): Inline Murmur hash with power-of-two mask fast-path and single-divisor bit test loop.
+[KeyMayMatch]   x assemble: line 67 `cmp r9, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register)
+[KeyMayMatch] KeyMayMatch-002 v muse-spark-1.3-contributor (97.4s): Replacing repeated modulo divisions with one Barrett reciprocal plus mulhi and using lea for address and hash arithmetic.
+[KeyMayMatch]   x assemble: line 44 `lea ecx, [rcx+rdx+rax]`: `[rcx+rdx+rax]' is not a valid base/index expression (an address is base + index*{1,2,4,8} + displacement: at most two 64-bit registers, scale 1, 2, 4 or 8; add a third term with lea or add first); line 57 `lea ecx, [rcx+rdx+rax]`: `[rcx+rdx+rax]' is not a valid base/index expression (an address is base + index*{1,2,4,8} + displacement: at most two 64-bit registers, scale 1, 2, 4 or 8; add a third term with lea or add first)
+[KeyMayMatch] KeyMayMatch-003 v muse-spark-1.3-contributor (84.9s): Replacing each 32-bit div with a once-computed 2^64 reciprocal plus mulhi and one correction, with huge-filter modulo folding to identity.
+[KeyMayMatch]   x assemble: line 65 `.Ltail:`: symbol `.Ltail' is already defined (every label must be unique); line 67 `.Ltailin:`: symbol `.Ltailin' is already defined (every label must be unique)
+[KeyMayMatch] KeyMayMatch-006 v muse-spark-1.3-contributor (77.6s): Inline murmur Hash with counter loop plus power-of-two and div-skip bloom probing to cut latency.
+[KeyMayMatch]   x assemble: line 52 `cmp r9, 4294967296`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register)
+[KeyMayMatch] KeyMayMatch-004 v muse-spark-1.3-contributor (92.6s): Power-of-two bloom size via mask instead of div, 32-bit div and inlined Murmur hash.
+[KeyMayMatch]   121.82 ± 1.02 ticks (x1.008 vs clang, x1.008 vs gcc)
+[KeyMayMatch]   x benchmark: 121.82 ns/record, not faster than the C build (122.80)
+[KeyMayMatch] KeyMayMatch-005 v muse-spark-1.3-contributor (106.8s): Replaces per-probe divisions with one 64-bit reciprocal multiply and inlines the murmur hash for short keys.
+[KeyMayMatch]   122.91 ± 1.01 ticks (x0.999 vs clang, x0.999 vs gcc)
+[KeyMayMatch]   x benchmark: 122.91 ns/record, not faster than the C build (122.75)
+[Hash] Hash-007 v muse-spark-1.3-contributor (48.2s): Fused zero-test into shr flags and merged the low two tail bytes into one word load to cut loads and test uops.
+[CreateFilter] CreateFilter-003 v muse-spark-1.3-contributor (109.6s): Byte index uses (h>>3)%bytes with mask 1<<(h&7) and power-of-two fast path, inlined hash.
+[CreateFilter]   x abi: breaks the calling convention: reads r10 after a call, which may have changed it: keep values needed after a call in rbx, rbp, r12-r15 (saved on entry) or in a stack slot (mov rax,r10); reads r10 after a call, which may have changed it: keep values needed after a call in rbx, rbp, r12-r15 (saved on entry) or in a stack slot (test r10,rax); reads r10 after a call, which may have changed it: keep values needed after a call in rbx, rbp, r12-r15 (saved on entry) or in a stack slot (dec r10)
+[Hash]   119.33 ± 0.83 ticks (x1.014 vs clang, x1.014 vs gcc)
+[Hash]   x benchmark: 119.33 ns/record, not faster than the C build (120.95)
+[KeyMayMatch] KeyMayMatch-001r v muse-spark-1.3-contributor (13.3s): Inline Murmur hash with power-of-two mask fast-path and single-divisor bit test loop.
+[KeyMayMatch]   119.92 ± 0.52 ticks (x1.006 vs clang, x1.006 vs gcc)
+[KeyMayMatch]   x benchmark: 119.92 ns/record, not faster than the C build (120.59)
+[CreateFilter] CreateFilter-004 v muse-spark-1.3-contributor (124.0s): Barrett reciprocal plus power-of-two mask replaces per-bit div, with inlined Murmur hash.
+[CreateFilter]   x assemble: local label `"9" (instance number 1 of a fb label)' is not defined
+[CreateFilter] CreateFilter-005 v muse-spark-1.3-contributor (92.5s): Replace per-bit division by one Barrett magic multiply with single correction and power-of-two masking.
+[CreateFilter]   x assemble: line 47 `cmp r12, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register); line 66 `cmp r12, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register); line 153 `cmp r12, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register)
+[KeyMayMatch] KeyMayMatch-002r v muse-spark-1.3-contributor (10.2s): Fixing three-register lea with sequential adds.
+[KeyMayMatch]   x test: project test exited with 1: bloom or block wrong
+[CreateFilter] CreateFilter-001 v muse-spark-1.3-contributor (145.5s): Replace slow modulo division with single Barrett multiply plus sbb/adc correction and inline hash loops.
+[CreateFilter]   x assemble: line 52 `cmp rax, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register); line 65 `mov r8, qword ptr [r15+r11*8*2]`: `qword ptr [r15+r11*8*2]' is not a valid base/index expression (an address is base + index*{1,2,4,8} + displacement: at most two 64-bit registers, scale 1, 2, 4 or 8; add a third term with lea or add first); line 66 `mov r9, qword ptr [r15+r11*8*2+8]`: `qword ptr [r15+r11*8*2+8]' is not a valid base/index expression (an address is base + index*{1,2,4,8} + displacement: at most two 64-bit registers, scale 1, 2, 4 or 8; add a third term with lea or add first); line 115 `cmp r12, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register)
+[Hash] Hash-009 v muse-spark-1.3-contributor (29.2s): Removed the word-count test by using shr flag setting and reordered remainder masking to shorten setup.
+[Hash]   121.34 ± 1.38 ticks (x1.015 vs clang, x1.015 vs gcc)
+[Hash]   x benchmark: 121.34 ns/record, not faster than the C build (123.16), not in enough of the paired runs
+[KeyMayMatch] KeyMayMatch-003r v muse-spark-1.3-contributor (14.2s): Replacing each 32-bit div with a once-computed 2^64 reciprocal plus mulhi and one correction, with huge-filter modulo folding to identity.
+[Hash] Hash-008 v muse-spark-1.3-contributor (60.3s): Combined the two low tail bytes with one little-endian word load, i.e. a free multiply-by-256, and folded the xor-shift to run through eax.
+[KeyMayMatch]   x test: project test exited with 136: Floating point exception
+[Hash]   120.67 ± 2.17 ticks (x1.002 vs clang, x1.002 vs gcc)
+[Hash]   x benchmark: 120.67 ns/record, not faster than the C build (120.90)
+[Hash] stalled for 7; calling reasoning tier
+[KeyMayMatch] KeyMayMatch-006r v muse-spark-1.3-contributor (16.8s): Fix oversized immediate and loop counter to keep div-skip probing.
+[KeyMayMatch]   121.97 ± 0.90 ticks (x0.994 vs clang, x0.994 vs gcc)
+[KeyMayMatch]   x benchmark: 121.97 ns/record, not faster than the C build (121.27)
+[CreateFilter] CreateFilter-002 v muse-spark-1.3-contributor (159.2s): Precompute Barrett magic for h mod bits and inline Murmur hash to replace divs with multiplies.
+[CreateFilter]   x assemble: line 29 `cmp rbp, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register)
+[CreateFilter] CreateFilter-003r v muse-spark-1.3-contributor (31.6s): Byte index uses (h>>3)%bytes with mask 1<<(h&7) keeping byte count in callee-saved register.
+[CreateFilter]   121.88 ± 2.32 ticks (x1.013 vs clang, x1.013 vs gcc)
+[CreateFilter]   x benchmark: 121.88 ns/record, not faster than the C build (123.41)
+[CreateFilter] CreateFilter-005r v muse-spark-1.3-contributor (31.7s): Replace per-bit division by one Barrett magic multiply with single correction and power-of-two masking.
+[CreateFilter]   x abi: breaks the calling convention: reads r10 after a call, which may have changed it: keep values needed after a call in rbx, rbp, r12-r15 (saved on entry) or in a stack slot (mul r10d); reads r9 after a call, which may have changed it: keep values needed after a call in rbx, rbp, r12-r15 (saved on entry) or in a stack slot (imul eax,r9d); reads r9 after a call, which may have changed it: keep values needed after a call in rbx, rbp, r12-r15 (saved on entry) or in a stack slot (cmp edx,r9d)
+[Hash] Hash-012 v muse-spark-1.3-contributor (34.3s): Shr and-and flag reuse skips tests and lea fuses a tail add.
+[Hash]   119.97 ± 3.06 ticks (x1.012 vs clang, x1.012 vs gcc)
+[Hash]   x benchmark: 119.97 ns/record, not faster than the C build (121.41)
+[CreateFilter] CreateFilter-001r v muse-spark-1.3-contributor (51.0s): Replace slow modulo division with single Barrett multiply plus sbb/adc correction and inline hash loops.
+[CreateFilter] CreateFilter-006 v muse-spark-1.3-contributor (136.1s): Replaces slow div-based bit modulo with one-time Barrett reciprocal plus power-of-two mask path and inlines Murmur hash.
+[CreateFilter]   x assemble: line 34 `cmp rbx, 4294967295`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register)
+[CreateFilter]   x test: project test exited with 132: Illegal instruction
+[Hash] Hash-011 v muse-spark-1.3-contributor (54.0s): Used shr flag test for the loop and cmov plus sbb/not masks with safe fallback addresses for a branchless tail.
+[Hash]   121.06 ± 2.67 ticks (x1.018 vs clang, x1.018 vs gcc)
+[Hash]   x benchmark: 121.06 ns/record, not faster than the C build (123.20)
+[KeyMayMatch] KeyMayMatch-007 v muse-spark-1.3-contributor (47.9s): Fewer loop uops with counted hash words and masked tail loads.
+[KeyMayMatch]   119.85 ± 0.28 ticks (x1.009 vs clang, x1.009 vs gcc)
+[KeyMayMatch]   x benchmark: 119.85 ns/record, not faster than the C build (120.97)
+[CreateFilter] CreateFilter-002r v muse-spark-1.3-contributor (23.1s): Precompute Barrett magic for h mod bits and inline Murmur hash to replace divs with multiplies.
+[CreateFilter]   128.68 ± 0.96 ticks (x0.941 vs clang, x0.941 vs gcc)
+[CreateFilter]   x benchmark: 128.68 ns/record, not faster than the C build (121.03)
+[KeyMayMatch] KeyMayMatch-008 v muse-spark-1.3-contributor (44.3s): Using one 64-bit division to build a reciprocal for the bloom size then per-probe mulhi modulo correction.
+[KeyMayMatch]   120.71 ± 0.82 ticks (x0.997 vs clang, x0.997 vs gcc)
+[KeyMayMatch]   x benchmark: 120.71 ns/record, not faster than the C build (120.34)
+[KeyMayMatch] KeyMayMatch-009 v muse-spark-1.3-contributor (59.3s): Replacing per-probe divisions with one 64-bit reciprocal multiply plus correction and inlining the hash.
+[KeyMayMatch]   x test: project test exited with 136: Floating point exception
+[KeyMayMatch] stopped: nothing beat the C in 9 candidates
+[PutVarint32] baseline: clang 120.80
+[CreateFilter] CreateFilter-004r v muse-spark-1.3-contributor (99.2s): Barrett reciprocal plus power-of-two mask replaces per-bit div, with inlined Murmur hash.
+[CreateFilter]   x assemble: line 38 `cmp rdx, 4294967296`: operand type mismatch for `cmp' (immediates are at most 32 bits, sign-extended; put a 64-bit constant in a register first (`mov r11, 0x...`) and use the register); line 171 `shl r11b, sil`: operand type mismatch for `shl' (a variable shift count must be in cl (`shl rax, cl`), or use shlx/shrx/sarx); line 194 `shl cl, dl`: operand type mismatch for `shl' (a variable shift count must be in cl (`shl rax, cl`), or use shlx/shrx/sarx)
+[CreateFilter] CreateFilter-006r v muse-spark-1.3-contributor (43.5s): Replaces slow div-based bit modulo with one-time Barrett reciprocal plus power-of-two mask path and inlines Murmur hash.
+[CreateFilter]   x test: project test exited with 1: bloom or block wrong
+[PutVarint32] PutVarint32-003 v muse-spark-1.3-contributor (65.0s): Branchless varint via widened 64-bit PDEP spread plus LZCNT length and shifted continuation mask.
+[PutVarint32] PutVarint32-002 v muse-spark-1.3-contributor (65.3s): Branchless varint encode with PDEP payload expansion plus LZCNT length and fused continuation mask.
+[PutVarint32]   119.89 ± 0.86 ticks (x1.007 vs clang, x1.007 vs gcc)
+[PutVarint32]   x benchmark: 119.89 ns/record, not faster than the C build (120.79)
+[PutVarint32]   124.67 ± 1.26 ticks (x0.992 vs clang, x0.992 vs gcc)
+[PutVarint32]   x benchmark: 124.67 ns/record, not faster than the C build (123.73)
+[PutVarint32] PutVarint32-001 v muse-spark-1.3-contributor (91.8s): Branchless varint encode with PDEP plus LZCNT length and XOR terminator clear.
+[PutVarint32]   123.62 ± 0.69 ticks (x0.992 vs clang, x0.992 vs gcc)
+[PutVarint32]   x benchmark: 123.62 ns/record, not faster than the C build (122.61)
+[PutVarint32] PutVarint32-004 v muse-spark-1.3-contributor (100.8s): Branchless varint encode with LZCNT length, PDEP bit deposit and BTR continuation clear plus single store and tail call.
+[PutVarint32]   123.62 ± 0.63 ticks (x0.997 vs clang, x0.997 vs gcc)
+[PutVarint32]   x benchmark: 123.62 ns/record, not faster than the C build (123.20)
+[CreateFilter] CreateFilter-007 v muse-spark-1.3-contributor (101.2s): 
+[CreateFilter]   x test: project test exited with 139: Segmentation fault
+[CreateFilter] CreateFilter-008 v muse-spark-1.3-contributor (109.1s): Byte-index Barrett reduction on (h>>3)%bytes with power-of-two masking and inlined Murmur hash.
+[CreateFilter]   x test: project test exited with 139: Segmentation fault
+[CreateFilter] CreateFilter-009 v muse-spark-1.3-contributor (72.9s): 
+[CreateFilter]   x parse: no <asm> block in reply
+[CreateFilter] stopped: nothing beat the C in 9 candidates
+[GetLengthPrefixedSlice] baseline: clang 120.58
+[Hash] Hash-010 R muse-wonder-1.0 (230.1s): Uses a 32-byte unrolled main loop plus a Duff-style fallthrough for remaining words to cut loop overhead and expose loads early while keeping the serial multiply-xorshift chain minimal.
+[Hash]   119.26 ± 0.34 ticks (x1.01 vs clang, x1.01 vs gcc)
+[Hash]   x benchmark: 119.26 ns/record, not faster than the C build (120.48)
+[Hash] stopped: no improvement in the last wave (12 candidates)
+[GetVarint32Ptr] baseline: clang 120.07
+[PutVarint32] PutVarint32-006 v muse-spark-1.3-contributor (152.1s): Inline Buf fast-path with branchless varint encode and single capacity check.
+[PutVarint32]   102.17 ± 1.15 ticks (x1.179 vs clang, x1.179 vs gcc)
+[PutVarint32]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[PutVarint32]   * new best: PutVarint32-006
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-001 v muse-spark-1.3-contributor (42.7s): Single-byte fast path with shared multi-byte unroll and only-once stores.
+[GetLengthPrefixedSlice]   119.93 ± 0.51 ticks (x1.0 vs clang, x1.0 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 119.93 ns/record, not faster than the C build (119.95), not in enough of the paired runs
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-002 v muse-spark-1.3-contributor (45.9s): Fast single-byte varint path with shared limit/cursor/len tail and loop-free multi-byte fallback.
+[GetLengthPrefixedSlice]   121.19 ± 2.67 ticks (x1.013 vs clang, x1.013 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 121.19 ns/record, not faster than the C build (122.76)
+[PutVarint32] PutVarint32-005 v muse-spark-1.3-contributor (190.5s): Branchless varint encode with LZCNT size and shifted-OR spread plus inlined Buf fast path.
+[PutVarint32]   104.74 ± 2.50 ticks (x1.173 vs clang, x1.173 vs gcc)
+[PutVarint32]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-003 v muse-spark-1.3-contributor (56.4s): Fast single-byte varint path with 64-bit length arithmetic and shared tail for multi-byte cases.
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-006 v muse-spark-1.3-contributor (57.7s): Fast single-byte varint path with size>len check and shared multi-byte decode loop.
+[GetLengthPrefixedSlice]   119.33 ± 2.94 ticks (x1.012 vs clang, x1.012 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 119.33 ns/record, not faster than the C build (120.75), not in enough of the paired runs
+[GetLengthPrefixedSlice]   119.09 ± 0.80 ticks (x1.019 vs clang, x1.019 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 119.09 ns/record, not faster than the C build (121.31)
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-005 v muse-spark-1.3-contributor (62.8s): Fast single-byte varint path with fused input/result updates and unrolled bounded multi-byte decode.
+[GetLengthPrefixedSlice]   121.37 ± 1.81 ticks (x1.013 vs clang, x1.013 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 121.37 ns/record, not faster than the C build (122.92), not in enough of the paired runs
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-004 v muse-spark-1.3-contributor (68.2s): Fast single-byte varint path with plain stores and tzcnt-free unrolled multi-byte decode sharing one epilogue.
+[GetLengthPrefixedSlice]   120.70 ± 2.39 ticks (x1.003 vs clang, x1.003 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 120.70 ns/record, not faster than the C build (121.02), not in enough of the paired runs
+[GetVarint32Ptr] GetVarint32Ptr-002 v muse-spark-1.3-contributor (37.0s): Hoisted the return-pointer lea to overlap the byte load and used zero-extend plus byte test to shorten the fast path.
+[GetVarint32Ptr]   124.07 ± 0.77 ticks (x0.975 vs clang, x0.975 vs gcc)
+[GetVarint32Ptr]   x benchmark: 124.07 ns/record, not faster than the C build (120.93)
+[GetVarint32Ptr] GetVarint32Ptr-001 v muse-spark-1.3-contributor (77.9s): Combine bounds and continuation-bit checks into one mask with sbb/andn for a single branch.
+[GetVarint32Ptr]   126.33 ± 0.61 ticks (x0.977 vs clang, x0.977 vs gcc)
+[GetVarint32Ptr]   x benchmark: 126.33 ns/record, not faster than the C build (123.48)
+[GetVarint32Ptr] GetVarint32Ptr-006 v muse-spark-1.3-contributor (36.3s): Compute p+1 early in parallel with the guarded load and keep p intact for tail-jumps to the fallback.
+[GetVarint32Ptr]   123.56 ± 1.16 ticks (x0.975 vs clang, x0.975 vs gcc)
+[GetVarint32Ptr]   x benchmark: 123.56 ns/record, not faster than the C build (120.45)
+[GetVarint32Ptr] GetVarint32Ptr-004 v muse-spark-1.3-contributor (56.6s): Use a zero-extending byte load with low-byte sign test and single lea for p+1 with conditional tail-calls to fallback.
+[GetVarint32Ptr]   123.78 ± 0.77 ticks (x0.98 vs clang, x0.98 vs gcc)
+[GetVarint32Ptr]   x benchmark: 123.78 ns/record, not faster than the C build (121.26)
+[GetVarint32Ptr] GetVarint32Ptr-005 v muse-spark-1.3-contributor (55.4s): Speculatively load the first byte in parallel with the limit check to shorten the critical path and use lea for the bumped pointer.
+[GetVarint32Ptr]   126.38 ± 1.46 ticks (x0.984 vs clang, x0.984 vs gcc)
+[GetVarint32Ptr]   x benchmark: 126.38 ns/record, not faster than the C build (124.35)
+[PutVarint32] PutVarint32-007 v muse-spark-1.3-contributor (63.7s): Two-tier fast path for 1- and 2-byte varints with branchless fallback for larger sizes.
+[PutVarint32]   101.03 ± 1.22 ticks (x1.2 vs clang, x1.2 vs gcc)
+[PutVarint32]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[PutVarint32] PutVarint32-009 v muse-spark-1.3-contributor (52.8s): Branchless varint using parallel shifted-OR payload, OR 0x80 mask plus BTR terminator clear with inlined Buf fast path.
+[PutVarint32]   105.31 ± 1.06 ticks (x1.173 vs clang, x1.173 vs gcc)
+[PutVarint32]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-007 v muse-spark-1.3-contributor (48.4s): Shared varint-length tail with single-LEA pointer advance and looped multi-byte decode to cut uops on the hot single-byte path.
+[PutVarint32] PutVarint32-008 v muse-spark-1.3-contributor (72.8s): Parallel masked shifts combined by OR tree with multiply-by--37 length formula and unconditional 5-byte fast-path store.
+[PutVarint32]   103.18 ± 1.81 ticks (x1.194 vs clang, x1.194 vs gcc)
+[PutVarint32]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[PutVarint32] stalled for 4; calling reasoning tier
+[PutVarint32] muse-wonder-1.0 not called: a reply could cost $0.76, $0.38 is left under the cap
+[GetLengthPrefixedSlice]   120.85 ± 2.98 ticks (x1.006 vs clang, x1.006 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 120.85 ns/record, not faster than the C build (121.52)
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-008 v muse-spark-1.3-contributor (52.4s): Fused address-plus-length LEA cuts one dependent LEA off the store-forwarding chain for the hot one-byte case.
+[GetLengthPrefixedSlice]   120.40 ± 0.60 ticks (x1.002 vs clang, x1.002 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 120.40 ns/record, not faster than the C build (120.68)
+[GetLengthPrefixedSlice] GetLengthPrefixedSlice-009 v muse-spark-1.3-contributor (68.8s): Wide dword load for multi-byte varints plus a fast single-byte path.
+[GetVarint32Ptr] GetVarint32Ptr-003 v muse-spark-1.3-contributor (132.9s): Widened return and value into separate 64/32-bit registers with early lea so the return pointer is ready in parallel with the load.
+[GetLengthPrefixedSlice]   119.88 ± 0.92 ticks (x1.008 vs clang, x1.008 vs gcc)
+[GetLengthPrefixedSlice]   x benchmark: 119.88 ns/record, not faster than the C build (120.83)
+[GetLengthPrefixedSlice] stopped: nothing beat the C in 9 candidates
+[GetVarint32Ptr]   123.78 ± 0.39 ticks (x0.977 vs clang, x0.977 vs gcc)
+[GetVarint32Ptr]   x benchmark: 123.78 ns/record, not faster than the C build (120.96)
+[EncodeVarint32] baseline: clang 123.67
+[PutVarint32] PutVarint32-010 v muse-spark-1.3-contributor (42.2s): Load Buf base with BMI2 RORX rotate-by-zero copy keeping branchless encode and fast-path store.
+[PutVarint32]   104.88 ± 1.24 ticks (x1.181 vs clang, x1.181 vs gcc)
+[PutVarint32]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[GetVarint32Ptr] GetVarint32Ptr-009 v muse-spark-1.3-contributor (42.9s): Inline the two-byte varint with a SWAR-style second-byte combine so LevelDB's common small lengths avoid the fallback call.
+[GetVarint32Ptr]   x test: project test exited with 134: Aborted
+[PutVarint32] PutVarint32-011 v muse-spark-1.3-contributor (85.1s): Pack payload with LEA scaled adds and clear terminator with BTR flag operation.
+[PutVarint32]   115.07 ± 3.31 ticks (x1.185 vs clang, x1.185 vs gcc)
+[PutVarint32]   tested only: judged by the project's tests and benchmark; no proof for code that touches memory yet
+[PutVarint32] stopped: no improvement in the last wave (11 candidates)
+[GetVarint32] baseline: clang 135.86
+[EncodeVarint32] EncodeVarint32-001 v muse-spark-1.3-contributor (61.2s): Branchless length via lzcnt and byte expansion via PDEP with continuation fixup.
+[EncodeVarint32]   128.28 ± 1.10 ticks (x0.996 vs clang, x0.996 vs gcc)
+[EncodeVarint32]   x benchmark: 128.28 ns/record, not faster than the C build (127.73)
+[GetVarint32Ptr] GetVarint32Ptr-008 v muse-spark-1.3-contributor (65.3s): Added a two-byte varint fast path to avoid the fallback call, keeping the one-byte path branch-predicted.
+[GetVarint32Ptr]   133.89 ± 0.63 ticks (x0.952 vs clang, x0.952 vs gcc)
+[GetVarint32Ptr]   x benchmark: 133.89 ns/record, not faster than the C build (127.41)
+[GetVarint32Ptr] GetVarint32Ptr-007 v muse-spark-1.3-contributor (75.4s): Replacing the AGU lea with an ALU inc lets the pointer bump run in parallel with the guarded load without contending for the AGU.
+[GetVarint32Ptr]   138.97 ± 7.13 ticks (x0.963 vs clang, x0.963 vs gcc)
+[GetVarint32Ptr]   x benchmark: 138.97 ns/record, not faster than the C build (133.77)
+[GetVarint32Ptr] stopped: nothing beat the C in 9 candidates
+[GetVarint32] GetVarint32-002 v muse-spark-1.3-contributor (29.1s): Unrolled varint decode with immediate shifts and lea/sub pointer updates.
+[GetVarint32]   127.02 ± 1.36 ticks (x1.0 vs clang, x1.0 vs gcc)
+[GetVarint32]   x benchmark: 127.02 ns/record, not faster than the C build (127.03), not in enough of the paired runs
+[EncodeVarint32] EncodeVarint32-002 v muse-spark-1.3-contributor (97.5s): Branchless length via lzcnt and byte spread via pdep with continuation bits cleared by btr.
+[EncodeVarint32]   130.06 ± 0.46 ticks (x0.976 vs clang, x0.976 vs gcc)
+[EncodeVarint32]   x benchmark: 130.06 ns/record, not faster than the C build (126.91)
+[EncodeVarint32] EncodeVarint32-004 v muse-spark-1.3-contributor (99.8s): Pack 7-bit groups with PDEP and size with LZCNT, fast single-byte path plus word/dword stores.
+[EncodeVarint32]   126.69 ± 0.76 ticks (x0.998 vs clang, x0.998 vs gcc)
+[EncodeVarint32]   x benchmark: 126.69 ns/record, not faster than the C build (126.41)
+[EncodeVarint32] EncodeVarint32-003 v muse-spark-1.3-contributor (112.8s): Spread 7-bit groups with PDEP and mask continuation bits with BZHI, sizing length via lzcnt.
+[EncodeVarint32]   127.13 ± 0.43 ticks (x0.988 vs clang, x0.988 vs gcc)
+[EncodeVarint32]   x benchmark: 127.13 ns/record, not faster than the C build (125.60)
+[GetVarint32] GetVarint32-003 v muse-spark-1.3-contributor (44.6s): Single 4-byte load fast path when 5+ bytes remain with early 1-byte exit, widened shifts for exact 32-bit wrap.
+[GetVarint32]   x assemble: local label `"6" (instance number 2 of a fb label)' is not defined
+[GetVarint32] GetVarint32-003r v muse-spark-1.3-contributor (13.1s): Single 4-byte load fast path when 5+ bytes remain with early 1-byte exit, widened shifts for exact 32-bit wrap.
+[GetVarint32]   x test: project test exited with 134: Aborted
+[GetVarint32] GetVarint32-001 v muse-spark-1.3-contributor (85.2s): Parallel 5-byte loads with incremental masked accumulation hide load latency and remove per-byte size checks on the hot path.
+[GetVarint32]   125.76 ± 1.02 ticks (x1.003 vs clang, x1.003 vs gcc)
+[GetVarint32]   x benchmark: 125.76 ns/record, not faster than the C build (126.15), not in enough of the paired runs
+[GetVarint32] GetVarint32-005 v muse-spark-1.3-contributor (62.4s): Bulk-decode 4 payload bytes with PEXT plus TZCNT length detect and BZHI masking, falling back to byte checks for short inputs.
+[GetVarint32]   x test: project test exited with 134: Aborted
+[GetVarint32] GetVarint32-006 v muse-spark-1.3-contributor (61.1s): Single wide load for size>=5 with sign-bit length tests and parallel shift-OR decode, keeping the 1-byte path minimal.
+[GetVarint32]   x assemble: line 45 `movzx r9d, ah`: can't encode register 'ah' in an instruction requiring REX/REX2 prefix (ah, bh, ch, dh can't appear in an instruction that uses r8-r15, sil, dil, spl, bpl or 64 bits); line 63 `movzx r9d, ah`: can't encode register 'ah' in an instruction requiring REX/REX2 prefix (ah, bh, ch, dh can't appear in an instruction that uses r8-r15, sil, dil, spl, bpl or 64 bits); line 87 `movzx r9d, ah`: can't encode register 'ah' in an instruction requiring REX/REX2 prefix (ah, bh, ch, dh can't appear in an instruction that uses r8-r15, sil, dil, spl, bpl or 64 bits)
+[EncodeVarint32] EncodeVarint32-006 v muse-spark-1.3-contributor (121.6s): Branchless varint via lzcnt size, BMI2 scatter-free payload build, and read-merge-write mask to store exactly n bytes.
+[EncodeVarint32]   129.68 ± 0.62 ticks (x0.974 vs clang, x0.974 vs gcc)
+[EncodeVarint32]   x benchmark: 129.68 ns/record, not faster than the C build (126.33)
+[EncodeVarint32] EncodeVarint32-005 v muse-spark-1.3-contributor (136.6s): Branchless varint assembly with PDEP inserting 7-bit groups, OR of continuation bytes and clearing the terminator via length from lzcnt, then one fast-path branch for stores.
+[EncodeVarint32]   130.12 ± 0.76 ticks (x0.973 vs clang, x0.973 vs gcc)
+[EncodeVarint32]   x benchmark: 130.12 ns/record, not faster than the C build (126.63)
+[GetVarint32] GetVarint32-004 v muse-spark-1.3-contributor (101.0s): Single dword load plus inverted-mask tzcnt finds the first terminator byte, decoding 1-4 byte varints without sequential loads.
+[GetVarint32]   125.75 ± 1.33 ticks (x1.005 vs clang, x1.005 vs gcc)
+[GetVarint32]   x benchmark: 125.75 ns/record, not faster than the C build (126.42)
+[GetVarint32] GetVarint32-006r v muse-spark-1.3-contributor (32.8s): Single wide load for size>=5 with sign-bit length tests and parallel shift-OR decode, keeping the 1-byte path minimal.
+[GetVarint32]   126.03 ± 2.09 ticks (x1.005 vs clang, x1.005 vs gcc)
+[GetVarint32]   x benchmark: 126.03 ns/record, not faster than the C build (126.62)
+[EncodeVarint32] EncodeVarint32-009 v muse-spark-1.3-contributor (22.6s): Two-level fast path for 1-2 byte values with SWAR combine plus LZCNT/PDEP only for longer lengths.
+[EncodeVarint32]   x test: project test exited with 134: Aborted
+[GetVarint32] GetVarint32-009 v muse-spark-1.3-contributor (43.1s): Wide dword load with inverted-continuation TZCNT plus BZHI-masked PEXT decodes 1-4 byte varints in one step.
+[GetVarint32]   x assemble: local label `"6" (instance number 2 of a fb label)' is not defined
+[GetVarint32] GetVarint32-009r v muse-spark-1.3-contributor (10.1s): Wide dword load with inverted-continuation TZCNT plus BZHI-masked PEXT decodes 1-4 byte varints in one step.
+[GetVarint32]   123.64 ± 2.15 ticks (x0.998 vs clang, x0.998 vs gcc)
+[GetVarint32]   x benchmark: 123.64 ns/record, not faster than the C build (123.42)
+[GetVarint32] GetVarint32-007 v muse-spark-1.3-contributor (62.5s): Early single-byte load makes the 1-byte hit need only size-nonzero, removing the size>=4 check from the hot path and cutting uops.
+[GetVarint32]   x test: project test exited with 139: Segmentation fault
+[EncodeVarint32] EncodeVarint32-008 v muse-spark-1.3-contributor (98.6s): Build the byte payload with three add-the-high-part expansions that insert the varint gaps, then per-length continuation OR and narrow stores.
+[EncodeVarint32]   122.93 ± 0.60 ticks (x0.984 vs clang, x0.984 vs gcc)
+[EncodeVarint32]   x benchmark: 122.93 ns/record, not faster than the C build (121.02)
+[EncodeVarint32] EncodeVarint32-007 v muse-spark-1.3-contributor (116.3s): Branch on small lengths with byte stores and collapse the rare 4-byte case into one dword built by PDEP.
+[GetVarint32] GetVarint32-008 v muse-spark-1.3-contributor (99.3s): Branchless 1-4 byte decode with tzcnt length, bzhi masking and parallel shift-OR gather.
+[EncodeVarint32]   124.31 ± 0.97 ticks (x0.991 vs clang, x0.991 vs gcc)
+[EncodeVarint32]   x benchmark: 124.31 ns/record, not faster than the C build (123.15)
+[EncodeVarint32] stopped: nothing beat the C in 9 candidates
+[GetVarint32]   121.80 ± 0.70 ticks (x0.992 vs clang, x0.992 vs gcc)
+[GetVarint32]   x benchmark: 121.80 ns/record, not faster than the C build (120.79)
+[GetVarint32] stopped: nothing beat the C in 9 candidates
+KeyMayMatch: no win (-, 9 candidates)
+CreateFilter: no win (-, 9 candidates)
+Hash: x1.031 vs clang, x1.031 vs gcc (tested_only, 12 candidates)
+PutVarint32: x1.182 vs clang, x1.182 vs gcc (tested_only, 11 candidates)
+GetLengthPrefixedSlice: no win (-, 9 candidates)
+GetVarint32Ptr: no win (-, 9 candidates)
+EncodeVarint32: no win (-, 9 candidates)
+GetVarint32: no win (-, 9 candidates)
+model spend: $0.67 (list-price estimate)
+Hash: Hash <- Hash-006 (1.02x, UNSAFE: tested only)
+PutVarint32: PutVarint32 <- PutVarint32-006 (1.18x, UNSAFE: tested only)
+wrote 2 entries to oqed.lock
+[report] building plain (clang) and with oqed-cc (2 lock entries)
+  coding.c: PutVarint32: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)
+  hash.c: Hash: UNSAFE: substituted on testing only (tested with the project's test command, source unchanged since)
+[report] `./ldb_bench --check`: both exit 0, output identical, 0 output files identical
+[report] leveldb_coding: plain 122 ns/record (IQR 2.1), oqed 102 (IQR 2.6): 1.196x, faster in 11 of 11 paired runs, 2 of 2 entries applied

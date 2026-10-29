@@ -1,0 +1,6 @@
+# oqed scan / oqed optimize. `build` is run with $CC set by oqed.
+build = "make -B ldb_bench"
+run = "./ldb_bench"
+test = "./ldb_bench --check"   # output must match the C build exactly
+bench = "./ldb_bench --time"   # ns per record, lower is better
+bench_unit = "ns/record"
