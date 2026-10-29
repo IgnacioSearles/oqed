@@ -33,6 +33,7 @@ import bisect
 import hashlib
 import json
 import os
+import pickle
 import re
 import shutil
 import subprocess
@@ -821,9 +822,18 @@ class _Found:
     slice_sha: str | None = None
 
 
-def _scan_unit(k: int, cmd: dict, src: str, work: Path, root: Path) -> list[_Found]:
+def _code_sha() -> str:
+    """oqed's own code: a cached scan result from another version doesn't count."""
+    h = hashlib.sha256()
+    for f in sorted(Path(__file__).parent.glob("*.py")):
+        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def _scan_unit(k: int, cmd: dict, src: str, work: Path, root: Path, cache: Path, code: str) -> list[_Found]:
     """Preprocess one source of the build and describe each project function
-    defined in it (a worker process: the AST stays here)."""
+    defined in it (a worker process: the AST stays here). Cached by the
+    preprocessed text, the compiler and flags, and oqed's code."""
     ipath = work / f"{k}.{Path(src).stem}.i"
     pre = subprocess.run(
         [cmd["cc"], *cmd["flags"], "-E", src, "-o", str(ipath)],
@@ -834,6 +844,24 @@ def _scan_unit(k: int, cmd: dict, src: str, work: Path, root: Path) -> list[_Fou
     )
     if pre.returncode != 0:
         return []
+    key = hashlib.sha256()
+    for part in (code, cmd["cc"], json.dumps(cmd["flags"]), str(root), cmd["cwd"], src):
+        key.update(part.encode() + b"\0")
+    key.update(ipath.read_bytes())
+    cached = cache / f"{key.hexdigest()}.pickle"
+    if cached.is_file():
+        try:
+            return pickle.loads(cached.read_bytes())
+        except Exception:  # noqa: BLE001 - a cache written by a killed scan
+            pass
+    out = _scan_text(k, cmd, src, ipath, work, root)
+    tmp = cached.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_bytes(pickle.dumps(out))
+    tmp.replace(cached)
+    return out
+
+
+def _scan_text(k: int, cmd: dict, src: str, ipath: Path, work: Path, root: Path) -> list[_Found]:
     unit = _Unit(ipath, Path(cmd["cwd"]), source_lang(src), cmd["flags"])
     hashed = unit if "clang" in Path(cmd["cc"]).name else None
     out: list[_Found] = []
@@ -906,8 +934,14 @@ def discover(project: Project, rec: Path) -> Scan:
     # Every source in parallel; merged in build order, so the first unit to
     # define a function (in a header, many do) is the one it is taken from.
     workers = min(_unit_workers(), max(len(jobs), 1))
+    code = _code_sha()
+    cache = project.state / "cache"
+    (cache / "units").mkdir(parents=True, exist_ok=True)
+    (cache / "checks").mkdir(exist_ok=True)
     with cf.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("forkserver")) as pool:
-        futures = [pool.submit(_scan_unit, k, c, s, work, project.root) for k, c, s in jobs]
+        futures = [
+            pool.submit(_scan_unit, k, c, s, work, project.root, cache / "units", code) for k, c, s in jobs
+        ]
         per_unit = [fut.result() for fut in futures]
     seen: dict[tuple[str, int, str], _Found] = {}
     for found in per_unit:
@@ -971,8 +1005,26 @@ def discover(project: Project, rec: Path) -> Scan:
         checks.append((f, tdir, meta, sig))
 
     # Compiling each slice with both compilers: subprocesses, so threads.
+    versions = "".join(
+        subprocess.run([c, "--version"], capture_output=True, text=True, check=False).stdout
+        for c in ("clang", "gcc")
+    )
+
+    def check(tdir: Path) -> tuple[str | None, bool]:
+        # Cached by the slice, its meta, both compilers and oqed's code.
+        key = hashlib.sha256((code + versions).encode())
+        for f in sorted(tdir.iterdir()):
+            key.update(f.name.encode() + b"\0" + f.read_bytes())
+        cached = cache / "checks" / f"{key.hexdigest()}.json"
+        if cached.is_file():
+            why, reads = json.loads(cached.read_text())
+            return why, reads
+        verdict = _check(load_target(tdir))
+        cached.write_text(json.dumps(verdict))
+        return verdict
+
     with cf.ThreadPoolExecutor(os.cpu_count() or 1) as pool:
-        verdicts = list(pool.map(lambda c: _check(load_target(c[1])), checks))
+        verdicts = list(pool.map(lambda c: check(c[1]), checks))
     for (f, tdir, meta, sig), (why, reads_globals) in zip(checks, verdicts, strict=True):
         if why is None and (sig.pointers or sig.ret_c or reads_globals):
             meta["oracle"] = "project"

@@ -322,3 +322,16 @@ def test_search_on_a_cxx_function(cxx, tmp_path):
     assert {e.stage for e in events if e.type == "candidate_rejected"} <= {"benchmark"}, events
     assert any(e.type == "candidate_benchmarked" for e in events)
     assert all(e.status == "proven" for e in events if e.type == "candidate_verified")
+
+
+def test_a_rescan_comes_from_the_cache(cxx):
+    p, by = cxx
+    cache = p.state / "cache"
+    files = {f: f.stat().st_mtime_ns for f in cache.rglob("*") if f.is_file()}
+    assert any(f.parent.name == "units" for f in files) and any(f.parent.name == "checks" for f in files)
+    again = {f.name: f for f in project.scan(p).functions}
+    assert {n: (f.location, f.skipped, f.oracle, f.target is None) for n, f in again.items()} == {
+        n: (f.location, f.skipped, f.oracle, f.target is None) for n, f in by.items()
+    }
+    # Nothing re-parsed or re-checked: every cached result was read, none written.
+    assert {f: f.stat().st_mtime_ns for f in cache.rglob("*") if f.is_file()} == files
