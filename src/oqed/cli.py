@@ -478,7 +478,8 @@ def optimize(
     old = lock.load(lock_path) if lock_path.exists() else []
     lock_path.write_text(lock.dumps(lock.merge(old, new)))
     typer.echo(f"wrote {len(new)} entries to {lock_path}")
-    if project_mode and (old or new):
+    # In a project (also when given function names): measure the whole program.
+    if (project_mode or Path(project_config()).exists()) and (old or new):
         from . import project
         from .events import ProjectMeasured, append_event
         from .report import report as do_report

@@ -25,6 +25,7 @@ export interface ProjectResult {
   functions: number; // found by the scan
   searchable: number;
   won: string[]; // functions with a winner in this run
+  applied: string[] | null; // functions the measured build substituted (the lock as measured)
   cost: number | null;
 }
 
@@ -70,6 +71,7 @@ function summarize(text: string, scanned: { functions: { skipped: string | null 
     functions: scanned.functions.length,
     searchable: scanned.functions.filter((f) => !f.skipped).length,
     won: [],
+    applied: null,
     cost: null,
   };
   const won = new Set<string>();
@@ -87,6 +89,12 @@ function summarize(text: string, scanned: { functions: { skipped: string | null 
         r.faster_runs = m.faster_runs ?? null;
         r.runs = m.plain?.runs?.length ?? null;
         r.unit = m.unit;
+        // "file.c: name: substituted (...)" / "file.cc: name: UNSAFE: substituted ..."
+        const names = (m.notes ?? []).flatMap((n: string) => {
+          const hit = /: ([\w~]+): (?:UNSAFE: )?substituted/.exec(n);
+          return hit ? [hit[1]] : [];
+        });
+        r.applied = [...new Set<string>(names)];
       }
     } catch {
       /* a line being written */

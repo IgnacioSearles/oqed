@@ -239,6 +239,7 @@ export interface ProjectResult {
   functions: number;
   searchable: number;
   won: string[];
+  applied?: string[] | null; // functions the measured build substituted
   cost: number | null;
 }
 
