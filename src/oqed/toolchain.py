@@ -93,6 +93,32 @@ def compile_to_asm(target: Target, compiler: Compiler, march: str = DEFAULT_MARC
     return gcc_addresses(body) if compiler == "gcc" else body
 
 
+def record_layouts(target: Target, limit: int = 200) -> str:
+    """clang's layout of each struct, union and class the slice defines: the
+    offset of every field, so code that reads them needn't count bytes."""
+    cmd = [compiler_for(target, "clang"), *CFLAGS, *lang_flags(target), f"-march={DEFAULT_MARCH}"]
+    try:
+        out = _run([*cmd, "-c", "-o", "/dev/null", "-Xclang", "-fdump-record-layouts", str(target.c_file)])
+    except ToolError:
+        return ""
+    defined = set(re.findall(r"\b(?:struct|union|class)\s+(\w+)[^;{()]*\{", target.c_source))
+    blocks: list[list[str]] = []
+    keep = False
+    for line in out.splitlines():
+        if m := re.fullmatch(r"\s+0 \| (?:struct|union|class) ([\w:]+)", line):
+            keep = m.group(1).split("::")[-1] in defined
+            if keep:
+                blocks.append([line.split("|", 1)[1].strip()])
+        elif keep and (m := re.fullmatch(r"\s*([\d:-]+) \|   (\S.*)", line)):
+            field = re.sub(r"::\(unnamed at [^)]*\)", "::(unnamed)", m.group(2))
+            blocks[-1].append(f"{m.group(1):>6}  {field}")  # a top-level field, not a nested one
+        elif keep and (m := re.search(r"sizeof=(\d+)", line)):
+            blocks[-1][0] += f", {m.group(1)} bytes (field offsets in bytes):"
+            keep = False
+    lines = [ln for b in blocks for ln in b]
+    return "\n".join(lines[:limit])
+
+
 # gcc's Intel syntax puts the displacement outside the brackets.
 _GCC_ADDRESS = re.compile(r"(?<![\w.$])(-?[\w.$@]+(?:[+-]\d+)?)\[([^\]]+)\]")
 

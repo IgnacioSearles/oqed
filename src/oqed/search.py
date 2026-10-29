@@ -56,7 +56,7 @@ from .isa import forbidden_instructions, isa_violations
 from .oracle import BenchLock, ProjectOracle
 from .providers import Completion, ProviderError
 from .targets import Target, c_signature
-from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, Compiler, ToolError, assemble, mca
+from .toolchain import DEFAULT_MARCH, DEFAULT_MCPU, Compiler, ToolError, assemble, mca, record_layouts
 from .verify import Verifier
 
 
@@ -345,6 +345,8 @@ class FunctionSearch:
         )
         if len(t.args) > len(inline.CONSTRAINT):
             note += MANY_ARGS_NOTE
+        if layouts := record_layouts(t):
+            note += f"\n\nThe layout of the types above, as both compilers lay them out:\n```\n{layouts}\n```"
         self.context = (
             prompt.target_context(
                 t,
