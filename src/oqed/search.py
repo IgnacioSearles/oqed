@@ -325,7 +325,12 @@ class FunctionSearch:
             e.cycles = base if c == o.project.cc else None
             events[c] = e
         self.emit(
-            BaselineReady, source=t.c_source, signature=c_signature(t), tricks=self._tricks_info(), **events
+            BaselineReady,
+            source=t.c_source,
+            signature=c_signature(t),
+            tricks=self._tricks_info(),
+            unit=self.unit,
+            **events,
         )
         note = PROJECT_NOTE.format(
             bench=o.project.bench or f"CPU time of `{o.project.run}`", unit=self.unit, base=base.median

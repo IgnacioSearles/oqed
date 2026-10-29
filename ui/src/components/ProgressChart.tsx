@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { FunctionView } from "../model";
+import type { Candidate, FunctionView } from "../model";
 import { latencyUnit, modelLabel } from "../model";
 import { Panel } from "./Panel";
 
@@ -16,35 +16,54 @@ function niceStep(max: number): number {
 
 /** Latency of every measured candidate by proposal order, with the best-so-far
  * staircase and the compiler baselines. Axes are fixed from the full run so
- * nothing jumps during replay. Reasoning-tier candidates are diamonds. */
+ * nothing jumps during replay. Reasoning-tier candidates are diamonds.
+ * A function the project's benchmark judges is plotted as each candidate's
+ * speedup over the C build timed alternately with it: the whole program's
+ * speed drifts during a run, so one baseline from the start would mislead. */
 export function ProgressChart({ fn, full }: { fn: FunctionView; full: FunctionView }) {
   const [hover, setHover] = useState<string | null>(null);
+  const paired = fn.project;
+  const value = (c: Candidate) => (paired ? (c.paired ?? 1) : c.cycles!.median);
   const nMax = Math.max(full.candidates.length, 1);
-  const lat = [
-    full.clang.cycles?.median ?? 0,
-    full.gcc.cycles?.median ?? 0,
-    ...full.candidates.map((c) => c.cycles?.median ?? 0),
-  ];
-  const step = niceStep(Math.max(...lat) * 1.1 || 1);
-  const yMax = Math.ceil((Math.max(...lat) * 1.1 || 1) / step) * step;
+  const fullMeasured = full.candidates.filter((c) => c.cycles);
+  let yMin = 0;
+  let yMax: number;
+  let step: number;
+  if (paired) {
+    const vs = [1, ...fullMeasured.map(value)];
+    const lo = Math.min(...vs);
+    const hi = Math.max(...vs);
+    const pad = Math.max((hi - lo) * 0.15, 0.02);
+    step = niceStep((hi - lo + 2 * pad) * 1.0 || 0.1);
+    yMin = Math.floor((lo - pad) / step) * step;
+    yMax = Math.ceil((hi + pad) / step) * step;
+  } else {
+    const lat = [full.clang.cycles?.median ?? 0, full.gcc.cycles?.median ?? 0, ...fullMeasured.map(value)];
+    step = niceStep(Math.max(...lat) * 1.1 || 1);
+    yMax = Math.ceil((Math.max(...lat) * 1.1 || 1) / step) * step;
+  }
   const x = (n: number) => PAD.l + ((n - 0.5) / nMax) * (W - PAD.l - PAD.r);
-  const y = (v: number) => PAD.t + (1 - v / yMax) * (H - PAD.t - PAD.b);
+  const y = (v: number) => PAD.t + (1 - (v - yMin) / (yMax - yMin)) * (H - PAD.t - PAD.b);
 
   const measured = fn.candidates.filter((c) => c.cycles);
-  const steps = fn.bestHistory;
+  const steps = fn.bestHistory.map((s) => ({ n: s.n, v: paired ? (s.paired ?? 1) : s.latency }));
   const lastN = fn.candidates.length;
   let path = "";
   steps.forEach((s, i) => {
     const xEnd = i + 1 < steps.length ? steps[i + 1].n : Math.max(lastN, s.n);
-    path += `${i === 0 ? "M" : "L"}${x(s.n)},${y(s.latency)} L${x(xEnd)},${y(s.latency)} `;
+    path += `${i === 0 ? "M" : "L"}${x(s.n)},${y(s.v)} L${x(xEnd)},${y(s.v)} `;
   });
-  const ticks = Array.from({ length: Math.round(yMax / step) + 1 }, (_, i) => i * step);
+  const ticks = Array.from({ length: Math.round((yMax - yMin) / step) + 1 }, (_, i) => yMin + i * step);
   const hovered = measured.find((c) => c.id === hover);
 
-  const baselines = [
-    { key: "clang -O3", v: full.clang.cycles?.median },
-    { key: "gcc -O3", v: full.gcc.cycles?.median },
-  ].filter((b): b is { key: string; v: number } => b.v != null);
+  const baselines = (
+    paired
+      ? [{ key: "C build", v: 1 }]
+      : [
+          { key: "clang -O3", v: full.clang.cycles?.median },
+          { key: "gcc -O3", v: full.gcc.cycles?.median },
+        ]
+  ).filter((b): b is { key: string; v: number } => b.v != null);
   // Keep the two baseline labels from overlapping when the values are close.
   const labelY = baselines.map((b) => y(b.v));
   if (labelY.length === 2 && Math.abs(labelY[0] - labelY[1]) < 12) {
@@ -55,14 +74,21 @@ export function ProgressChart({ fn, full }: { fn: FunctionView; full: FunctionVi
   }
 
   return (
-    <Panel title="Progress" right={`latency per measured candidate · ${latencyUnit(fn)}`}>
+    <Panel
+      title="Progress"
+      right={
+        paired
+          ? `speedup over the C build timed alongside · ${latencyUnit(fn)}`
+          : `latency per measured candidate · ${latencyUnit(fn)}`
+      }
+    >
       <div className="relative overflow-x-auto px-1 py-1">
         <svg viewBox={`0 0 ${W} ${H}`} className="block w-full min-w-[560px]" role="img" aria-label="latency of candidates over the search">
           {ticks.map((t) => (
             <g key={t}>
               <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)} stroke="var(--rule-soft)" />
               <text x={PAD.l - 6} y={y(t) + 4} textAnchor="end" fontSize="11" fill="var(--ink-3)" className="tabular">
-                {Number(t.toFixed(2))}
+                {paired ? `${t.toFixed(2)}×` : Number(t.toFixed(2))}
               </text>
             </g>
           ))}
@@ -102,7 +128,7 @@ export function ProgressChart({ fn, full }: { fn: FunctionView; full: FunctionVi
           {steps.length > 0 && (
             <text
               x={W - PAD.r + 6}
-              y={y(steps[steps.length - 1].latency) + 4}
+              y={y(steps[steps.length - 1].v) + 4}
               fontSize="11"
               fontWeight="700"
               fill="var(--accent)"
@@ -113,7 +139,7 @@ export function ProgressChart({ fn, full }: { fn: FunctionView; full: FunctionVi
 
           {measured.map((c) => {
             const cx = x(c.n);
-            const cy = y(c.cycles!.median);
+            const cy = y(value(c));
             const won = !c.rejected;
             const fill = won ? "var(--accent)" : "var(--panel)";
             const stroke = won ? "var(--accent)" : "var(--ink-3)";
@@ -145,12 +171,15 @@ export function ProgressChart({ fn, full }: { fn: FunctionView; full: FunctionVi
             className="pointer-events-none absolute z-10 border border-rule bg-panel px-2 py-1 whitespace-nowrap"
             style={{
               left: `min(${(x(hovered.n) / W) * 100}%, calc(100% - 20rem))`,
-              top: `${(y(hovered.cycles!.median) / H) * 100}%`,
+              top: `${(y(value(hovered)) / H) * 100}%`,
               transform: "translate(8px, -120%)",
             }}
           >
             <div className="font-bold text-ink">
-              #{hovered.n} · {hovered.cycles!.median.toFixed(2)} ticks
+              #{hovered.n} ·{" "}
+              {paired
+                ? `${value(hovered).toFixed(3)}× (${hovered.cycles!.median.toFixed(2)} ${fn.unit ?? ""})`
+                : `${hovered.cycles!.median.toFixed(2)} ticks`}
             </div>
             <div className="text-ink-3">
               {modelLabel(hovered.model)} ({hovered.tier}) ·{" "}
@@ -168,7 +197,7 @@ export function ProgressChart({ fn, full }: { fn: FunctionView; full: FunctionVi
         <span>
           <span className="text-accent">━</span> best so far
         </span>
-        <span>╌ compiler -O3</span>
+        <span>{paired ? "╌ C build (1.00×)" : "╌ compiler -O3"}</span>
       </div>
     </Panel>
   );

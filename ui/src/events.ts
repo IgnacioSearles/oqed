@@ -46,6 +46,7 @@ export interface BaselineReady extends Base {
   clang: Baseline;
   gcc: Baseline;
   reference: Baseline | null;
+  unit?: string | null; // judged by the project's benchmark, in this unit
   tricks?: TrickRef[]; // verified wins on similar functions shown in its prompt
 }
 

@@ -30,6 +30,7 @@ export interface Candidate {
   status?: ProofStatus;
   statusReason?: string | null;
   cycles?: Cycles;
+  paired?: number; // speedup over the C build timed alternately with it (project functions)
   mcaLatency?: number | null;
   mcaThroughput?: number | null;
 }
@@ -43,11 +44,12 @@ export interface FunctionView {
   reference: Baseline | null;
   candidates: Candidate[];
   best: Candidate | null;
-  bestHistory: { n: number; t: number; latency: number }[]; // each new best, in order
+  bestHistory: { n: number; t: number; latency: number; paired: number | null }[]; // each new best, in order
   stalls: { t: number; afterN: number; rounds: number }[];
   stopped: { t: number; afterN: number; reason: string } | null; // converged or hit the spending cap
   inlined: boolean; // latency measured with the code inlined into a loop (else through call/ret)
   project: boolean; // judged by the project's own build, test and benchmark (whole program)
+  unit: string | null; // the project benchmark's unit
   tricks: TrickRef[]; // verified wins on similar functions its prompt showed
   timing: { model: number; harness: number; verifier: number; orchestrator: number };
 }
@@ -110,6 +112,9 @@ export function buildRun(events: RunEvent[]): RunView {
         run.fake = Boolean(e.config.fake);
         break;
       case "baseline_ready": {
+        // A run started with function names has no project_scanned event: the
+        // baseline says (older logs: only the project's compiler has a number).
+        const project = Boolean(run.project) || e.unit != null || (e.clang.cycles == null) !== (e.gcc.cycles == null);
         const fn: FunctionView = {
           id: e.function_id,
           signature: e.signature,
@@ -122,8 +127,9 @@ export function buildRun(events: RunEvent[]): RunView {
           bestHistory: [],
           stalls: [],
           stopped: null,
-          inlined: run.config.bench === "inline" && !run.project,
-          project: Boolean(run.project),
+          inlined: run.config.bench === "inline" && !project,
+          project,
+          unit: e.unit ?? null,
           tricks: e.tricks ?? [],
           timing: { model: 0, harness: 0, verifier: 0, orchestrator: 0 },
         };
@@ -153,6 +159,7 @@ export function buildRun(events: RunEvent[]): RunView {
         const c = cands.get(e.candidate_id);
         if (c) {
           c.cycles = e.cycles;
+          c.paired = e.speedup_vs_clang;
           c.mcaLatency = e.mca_latency;
           c.mcaThroughput = e.mca_rthroughput;
         }
@@ -163,7 +170,8 @@ export function buildRun(events: RunEvent[]): RunView {
         const c = cands.get(e.candidate_id);
         if (fn && c) {
           fn.best = c;
-          if (c.cycles) fn.bestHistory.push({ n: c.n, t: e.timestamp, latency: c.cycles.median });
+          if (c.cycles)
+            fn.bestHistory.push({ n: c.n, t: e.timestamp, latency: c.cycles.median, paired: c.paired ?? null });
         }
         break;
       }
@@ -233,8 +241,11 @@ export function instructionLines(asm: string): string[] {
 }
 
 /** Latency unit for axis and table labels. */
-export function latencyUnit(fn: FunctionView, projectUnit = "CPU ms"): string {
-  if (fn.project) return `whole program, ${projectUnit}`;
+export function latencyUnit(fn: FunctionView, projectUnit?: string | null): string {
+  if (fn.project) {
+    const unit = fn.unit ?? projectUnit;
+    return unit ? `whole program, ${unit}` : "whole program";
+  }
   return fn.inlined ? "TSC ticks/iteration, inlined" : "TSC ticks/call";
 }
 

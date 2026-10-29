@@ -51,6 +51,8 @@ class BaselineReady(_Event):
     clang: Baseline
     gcc: Baseline
     reference: Baseline | None = None
+    # Judged by the project's benchmark: its unit (`ns/op`); None for the harness's TSC ticks.
+    unit: str | None = None
     # Verified wins on similar functions shown in its prompt (the trick library):
     # id, function, project, explanation, status, speedup, similarity.
     tricks: list[dict] = []
@@ -92,7 +94,7 @@ class CandidateBenchmarked(_Event):
     type: Literal["candidate_benchmarked"] = "candidate_benchmarked"
     function_id: str
     candidate_id: str
-    cycles: Cycles  # latency per call, TSC ticks
+    cycles: Cycles  # latency per call, TSC ticks (or the project's benchmark, in its unit)
     mca_latency: float | None = None
     mca_rthroughput: float | None = None
     speedup_vs_clang: float
