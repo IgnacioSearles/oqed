@@ -6,7 +6,9 @@ oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C function, i
 
 Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
-> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. Pointed at a whole project with no functions picked, `oqed optimize` makes protobuf-c's size + pack workload 1.269× faster with clang (7 functions replaced, 2 of them proven; the proven ones alone give 1.171×; on packing workloads the search never saw, 1.10–1.21×, of which a few percent is code layout), cJSON 1.072× and zlib 1.026×, with identical output in every case (`sweep/`). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+**Live UI with the curated runs: [ignaciosearles.github.io/oqed](https://ignaciosearles.github.io/oqed/)**
+
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. Pointed at a whole project with no functions picked, `oqed optimize` makes protobuf-c's size + pack workload 1.269× faster with clang and 1.320× with gcc (7 functions replaced, 2 of them proven; the proven ones alone give 1.171× and 1.125×; on packing workloads the search never saw, 1.10–1.21×, of which a few percent is code layout), cJSON 1.072× and zlib 1.026×, with identical output in every case (`sweep/`). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 
@@ -76,6 +78,8 @@ cd ui && npm install
 npm run dev      # http://localhost:5173, serves every run in runs/ (new runs and live runs appear on their own)
 npm run build    # static site in ui/dist with the curated runs in runs/demo/
 ```
+
+Pushes to `main` that touch `ui/` or `runs/demo/` rebuild the hosted site (`.github/workflows/pages.yml`).
 
 Views: **projects** (every project oqed was pointed at: functions in scope, wins, whole-program speedup with its paired runs, spend), **project** (a codebase map of one run: a treemap of the project's functions sized by their share of the CPU samples, lighting up as they are searched and won, with replay; where the time goes, including what is outside the project; the paired whole-program runs; what happened to every candidate), **result** (C source, clang, gcc and oqed's assembly side by side with measurements) and **search** (the funnel, progress chart and candidate feed, with replay).
 
