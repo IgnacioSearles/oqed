@@ -14,6 +14,19 @@ export interface RunIndexEntry {
   functions: string[];
   project: string | null; // whole-project runs
   result: ProjectResult | null; // a whole-project run's measured outcome
+  wins: Win[]; // each function's best verified candidate
+}
+
+/** A function's best candidate in a run, for the cross-run leaderboard. */
+export interface Win {
+  function: string; // the run's function id (target name)
+  location: string | null; // file:line in the project (project runs)
+  speedup: number; // vs the faster -O3 build; project functions: the whole program, paired
+  program: boolean; // measured on the whole program (the project's benchmark)
+  status: string | null; // "proven" | "tested_only"
+  model: string | null;
+  tier: string | null;
+  candidate: string;
 }
 
 export interface ProjectResult {
@@ -26,6 +39,7 @@ export interface ProjectResult {
   searchable: number;
   won: string[]; // functions with a winner in this run
   applied: string[] | null; // functions the measured build substituted (the lock as measured)
+  appliedAt: string[] | null; // the same as "path/of/file.c:function", the path as the build saw it
   cost: number | null;
 }
 
@@ -46,6 +60,7 @@ function describe(file: string, demo: boolean): RunIndexEntry | null {
       /* a run with one event so far */
     }
     if (e.type !== "run_started") return null;
+    const wins = e.config?.fake ? [] : bestOf(text, second);
     return {
       id: e.run_id,
       file: `runs/${path.basename(file)}`,
@@ -55,10 +70,60 @@ function describe(file: string, demo: boolean): RunIndexEntry | null {
       functions: e.functions,
       project,
       result,
+      wins,
     };
   } catch {
     return null;
   }
+}
+
+/** Each function's best candidate (its last new_best), with its speedup. */
+function bestOf(text: string, second: string): Win[] {
+  const locations = new Map<string, string>();
+  try {
+    const s = JSON.parse(second);
+    if (s.type === "project_scanned") for (const f of s.functions) locations.set(f.name, f.location);
+  } catch {
+    /* no scan */
+  }
+  const program = new Set<string>(); // judged by the project's benchmark
+  const proposed = new Map<string, { model: string; tier: string }>();
+  const speedup = new Map<string, number>();
+  const status = new Map<string, string>();
+  const best = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    if (!/"(baseline_ready|candidate_proposed|candidate_benchmarked|candidate_verified|new_best)"/.test(line)) continue;
+    try {
+      const e = JSON.parse(line);
+      if (e.type === "baseline_ready") {
+        if (e.unit != null || (e.clang?.cycles == null) !== (e.gcc?.cycles == null)) program.add(e.function_id);
+      } else if (e.type === "candidate_proposed") proposed.set(e.candidate_id, { model: e.model, tier: e.model_tier });
+      else if (e.type === "candidate_benchmarked")
+        // Against the faster compiler (the smaller ratio); paired runs give one number.
+        speedup.set(e.candidate_id, Math.min(e.speedup_vs_clang, e.speedup_vs_gcc));
+      else if (e.type === "candidate_verified") status.set(e.candidate_id, e.status);
+      else if (e.type === "new_best") best.set(e.function_id, e.candidate_id);
+    } catch {
+      /* a line being written */
+    }
+  }
+  return [...best].flatMap(([fn, cid]) => {
+    const s = speedup.get(cid);
+    if (s == null) return [];
+    const p = proposed.get(cid);
+    return [
+      {
+        function: fn,
+        location: locations.get(fn) ?? null,
+        speedup: s,
+        program: program.has(fn),
+        status: status.get(cid) ?? null,
+        model: p?.model ?? null,
+        tier: p?.tier ?? null,
+        candidate: cid,
+      },
+    ];
+  });
 }
 
 function summarize(text: string, scanned: { functions: { skipped: string | null }[] }): ProjectResult {
@@ -72,6 +137,7 @@ function summarize(text: string, scanned: { functions: { skipped: string | null 
     searchable: scanned.functions.filter((f) => !f.skipped).length,
     won: [],
     applied: null,
+    appliedAt: null,
     cost: null,
   };
   const won = new Set<string>();
@@ -90,11 +156,12 @@ function summarize(text: string, scanned: { functions: { skipped: string | null 
         r.runs = m.plain?.runs?.length ?? null;
         r.unit = m.unit;
         // "file.c: name: substituted (...)" / "file.cc: name: UNSAFE: substituted ..."
-        const names = (m.notes ?? []).flatMap((n: string) => {
-          const hit = /: ([\w~]+): (?:UNSAFE: )?substituted/.exec(n);
-          return hit ? [hit[1]] : [];
+        const hits = (m.notes ?? []).flatMap((n: string) => {
+          const hit = /^(.*?): ([\w~]+): (?:UNSAFE: )?substituted/.exec(n);
+          return hit ? [[hit[1], hit[2]]] : [];
         });
-        r.applied = [...new Set<string>(names)];
+        r.applied = [...new Set<string>(hits.map((h: string[]) => h[1]))];
+        r.appliedAt = [...new Set<string>(hits.map((h: string[]) => `${h[0]}:${h[1]}`))];
       }
     } catch {
       /* a line being written */

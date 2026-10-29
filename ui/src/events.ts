@@ -228,6 +228,19 @@ export interface RunIndexEntry {
   functions: string[];
   project?: string | null;
   result?: ProjectResult | null;
+  wins?: Win[];
+}
+
+/** A function's best candidate in a run (from the run index). */
+export interface Win {
+  function: string;
+  location: string | null;
+  speedup: number;
+  program: boolean; // measured on the whole program
+  status: ProofStatus | null;
+  model: string | null;
+  tier: ModelTier | null;
+  candidate: string;
 }
 
 export interface ProjectResult {
@@ -240,6 +253,7 @@ export interface ProjectResult {
   searchable: number;
   won: string[];
   applied?: string[] | null; // functions the measured build substituted
+  appliedAt?: string[] | null; // "path/of/file.c:function" as the measured build saw it
   cost: number | null;
 }
 
