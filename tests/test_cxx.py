@@ -30,7 +30,9 @@ class Coder {
   explicit Coder(uint32_t k) : k_(k) {}
   uint32_t mix(uint32_t x) const;
   bool has(uint32_t x) const { return ((x * 2654435761u) >> 7 & k_) != 0; }
+  uint32_t spin(uint32_t x) const noexcept;
  private:
+  uint32_t twist(uint32_t x) const { return x * 3 + k_; }
   uint32_t k_;
 };
 uint32_t hot(uint32_t x);
@@ -60,6 +62,7 @@ class Coder::Table {
 };
 uint32_t probe(uint32_t x) { return Coder::Table().lookup(x); }
 uint32_t Coder::mix(uint32_t x) const { return rot(x ^ k_) * 0x9e3779b1u; }
+uint32_t Coder::spin(uint32_t x) const noexcept { return twist(x) ^ x; }
 uint32_t hot(uint32_t x) {
   return x < 16 ? x * 3 : (x < 256 ? x * 5 + 1 : (x < 65536 ? x * 7 + 2 : x * 9 + 3));
 }
@@ -84,7 +87,7 @@ int main(int argc, char** argv) {
   demo::Slice s{"abc", 3};
   for (uint32_t i = 0; i < 20000000; i++) {
     acc += demo::hot(i * 2654435761u >> (i & 31)) + c.mix(i) + c.has(i) + demo::hot(i, acc);
-    acc += demo::align(i) + demo::probe(i);
+    acc += demo::align(i) + demo::probe(i) + c.spin(i);
     lens += demo::varlen((uint64_t)i * i) + demo::total(s, i & 7);
     if ((i & 1023) == 0) out.clear();
     demo::put(&out, i);
@@ -111,6 +114,15 @@ MIX = """\tmov eax, esi
 \txor eax, dword ptr [rdi]
 \trol eax, 13
 \timul eax, eax, -1640531535
+\tret
+"""
+# Coder::spin as a whole function calling the private inline twist, which
+# has no symbol unless oqed-cxx marks it used.
+SPIN = """\tpush rbx
+\tmov ebx, esi
+\tcall _ZNK4demo5Coder5twistEj
+\txor eax, ebx
+\tpop rbx
 \tret
 """
 # put as a whole function: encode into a stack buffer, then call std::string::append.
@@ -170,7 +182,7 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     assert by["put"].time > 0.05  # sampled by mangled symbol
     # A method takes `this` and reads memory; a reference is a pointer.
     assert by["mix"].oracle == by["has"].oracle == by["put"].oracle == "project"
-    assert by["varlen"].oracle == "harness" and by["varlen"].location == "lib.h:22"
+    assert by["varlen"].oracle == "harness" and by["varlen"].location == "lib.h:24"
     mix = load_target(by["mix"].target)
     assert (mix.lang, mix.symbol, mix.qualified, mix.args, mix.ret) == (
         "c++", "_ZNK4demo5Coder3mixEj", "demo::Coder::mix", ["u64", "u32"], "u32"
@@ -222,17 +234,19 @@ def test_oqed_cxx_substitutes_proves_and_guards_exceptions(cxx, cc):
     _build(root, cc=cc)
     run = lambda: subprocess.run(["./app"], cwd=root, capture_output=True, text=True, check=True).stdout  # noqa: E731
     want = run()
-    t = {n: load_target(by[n].target) for n in ("varlen", "mix", "put")}
+    t = {n: load_target(by[n].target) for n in ("varlen", "mix", "put", "spin")}
     entries = [
         _entry(t["varlen"], VARLEN, "tested"),
         _entry(t["mix"], MIX, "tested"),
         _entry(t["put"], PUT, "tested"),
+        _entry(t["spin"], SPIN, "tested"),
     ]
     (root / "oqed.lock").write_text(lock.dumps(entries))
     err = _build(root, "-I.", "-Werror", cc=cc)  # flags the preprocessed file leaves unused
     # varlen's C has a loop, so the proof can't decide; differential testing passes.
     assert "varlen: UNSAFE: substituted on testing only (proof unknown" in err, err
     assert "mix: UNSAFE: substituted on testing only" in err, err
+    assert "spin: UNSAFE: substituted on testing only" in err, err
     # put calls std::string::append, which may throw through the asm.
     assert "put: kept C (calls out and may unwind through the asm" in err, err
     assert run() == want

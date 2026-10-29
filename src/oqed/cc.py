@@ -312,13 +312,16 @@ def _pointer_decl(qual_type: str, name: str) -> str:
     return f"{qual_type[:i].strip()} (*const {name}){qual_type[i:]}"
 
 
-def _keep_cxx(b: Build, d: Definition, syms: list[str]) -> str:
+def _keep_cxx(b: Build, d: Definition, syms: list[str]) -> tuple[str, list[int]]:
     """C++: used statics that take the addresses of the function and of the
     project functions its asm calls (by mangled symbol), with each one's exact
     type so overloads resolve, keeping them from being dropped or given another
-    calling convention. Free functions only: a method may be private (and its
-    class keeps it)."""
+    calling convention. Free functions only: a method may be private. Methods
+    the asm calls that are defined in this file (inline ones may have no
+    symbol, every call inlined) are marked `used` where they are defined:
+    those offsets are the second result."""
     targets = [] if d.method else [(d.qualified or d.name, d.type)]
+    used: list[int] = []
     if syms:
         demangled = _run(["c++filt", *syms]).stdout.splitlines()
         for sym, dem in zip(syms, demangled, strict=False):
@@ -330,6 +333,13 @@ def _keep_cxx(b: Build, d: Definition, syms: list[str]) -> str:
                 if x.get("kind") == "FunctionDecl" and x.get("mangledName") == sym:
                     targets.append((q, x["type"]["qualType"]))
                     break
+                if (
+                    x.get("kind") == "CXXMethodDecl"
+                    and x.get("mangledName") == sym
+                    and any(c.get("kind") == "CompoundStmt" for c in x.get("inner", []))
+                ):
+                    used.append(x["range"]["begin"]["offset"])
+                    break
     out = []
     for i, (q, t) in enumerate(targets):
         # In the function's own namespaces, where its type's names resolve.
@@ -337,7 +347,7 @@ def _keep_cxx(b: Build, d: Definition, syms: list[str]) -> str:
         opened = "".join(f"namespace {'' if sc == '(anonymous namespace)' else sc} {{ " for sc in scopes)
         keep = f"static {_pointer_decl(t, f'__oqed_keep_{d.name}_{i}')} __attribute__((used)) = &{name};"
         out.append(opened + keep + " }" * len(scopes))
-    return "\n".join(out)
+    return "\n".join(out), used
 
 
 @dataclass
@@ -354,6 +364,7 @@ class Substitution:
     body: str = ""  # replacement C body
     attrs: str = ""  # inserted before the definition
     tail: str = ""  # appended to the file (C++: where every class is complete)
+    used: list[int] = field(default_factory=list)  # offsets of callees' definitions to mark `used`
     function: bool = False
 
     def __post_init__(self) -> None:
@@ -373,7 +384,7 @@ class Substitution:
         syms = sorted({sym for _, sym in relocations(asm) if sym and sym != d.name})
         if b.lang == "c++":
             self.body = inline.naked_body(asm, d.name, b.intel)
-            self.tail = _keep_cxx(b, d, syms)
+            self.tail, self.used = _keep_cxx(b, d, syms)
             return
         keep = [d.name] + [sym for sym in syms if _declared(b.path, sym)]
         refs = ", ".join(f"(void *)&{sym}" for sym in keep)
@@ -384,13 +395,19 @@ class Substitution:
 
 
 def rewrite(text: bytes, subs: list[Substitution]) -> bytes:
-    for s in sorted(subs, key=lambda s: s.definition.start, reverse=True):
+    # (start, end, replacement) in the original text, applied from the end.
+    edits: dict[tuple[int, int], bytes] = {}
+    for s in subs:
         a, b = s.definition.body
         # Keep the line count so line markers, diagnostics and the
         # vectorization guard's loop locations after the function don't move.
-        text = text[:a] + s.body.encode() + b"\n" * text[a:b].count(b"\n") + text[b:]
+        edits[(a, b)] = s.body.encode() + b"\n" * text[a:b].count(b"\n")
         start = s.definition.start
-        text = text[:start] + s.attrs.encode() + text[start:]
+        edits[(start, start)] = edits.get((start, start), b"") + s.attrs.encode()
+        for u in s.used:
+            edits[(u, u)] = edits.get((u, u), b"") + b"__attribute__((used)) "
+    for (a, b), new in sorted(edits.items(), reverse=True):
+        text = text[:a] + new + text[b:]
     tails = "".join(s.tail for s in subs)
     return text + (f"\n{tails}\n".encode() if tails else b"")
 
