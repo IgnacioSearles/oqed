@@ -1,0 +1,122 @@
+[
+  {
+    "workload": "mixed",
+    "lock": "all",
+    "entries": 7,
+    "applied": 7,
+    "plain": 75.595,
+    "oqed": 59.784,
+    "speedup": 1.264,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "mixed",
+    "lock": "proven",
+    "entries": 2,
+    "applied": 2,
+    "plain": 75.549,
+    "oqed": 67.487,
+    "speedup": 1.119,
+    "faster_runs": 10,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "small",
+    "lock": "all",
+    "entries": 7,
+    "applied": 7,
+    "plain": 52.827,
+    "oqed": 48.229,
+    "speedup": 1.095,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "small",
+    "lock": "proven",
+    "entries": 2,
+    "applied": 2,
+    "plain": 53.028,
+    "oqed": 51.626,
+    "speedup": 1.027,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "large",
+    "lock": "all",
+    "entries": 7,
+    "applied": 7,
+    "plain": 70.83,
+    "oqed": 63.575,
+    "speedup": 1.114,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "large",
+    "lock": "proven",
+    "entries": 2,
+    "applied": 2,
+    "plain": 70.503,
+    "oqed": 69.478,
+    "speedup": 1.015,
+    "faster_runs": 7,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "cover",
+    "lock": "all",
+    "entries": 7,
+    "applied": 7,
+    "plain": 28205.747,
+    "oqed": 23367.048,
+    "speedup": 1.207,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "cover",
+    "lock": "proven",
+    "entries": 2,
+    "applied": 2,
+    "plain": 28134.165,
+    "oqed": 25595.06,
+    "speedup": 1.099,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "unpack",
+    "lock": "all",
+    "entries": 7,
+    "applied": 7,
+    "plain": 90.773,
+    "oqed": 86.867,
+    "speedup": 1.045,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  },
+  {
+    "workload": "unpack",
+    "lock": "proven",
+    "entries": 2,
+    "applied": 2,
+    "plain": 93.148,
+    "oqed": 90.467,
+    "speedup": 1.03,
+    "faster_runs": 11,
+    "runs": 11,
+    "output_identical": true
+  }
+]

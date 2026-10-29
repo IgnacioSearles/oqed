@@ -55,3 +55,24 @@ What the sweep caught along the way:
   helpers `uint64_size` (3.3x inlined latency) and `get_tag_size` (1.4x).
   Rejections: 45 correct but not faster, 37 wrong output (the coverage test
   caught them), 37 calling-convention violations, 24 assembler errors.
+- protobuf-c transfer check (`protobuf-c/transfer.py`, no model calls): the
+  same lock on workloads the search never ran (`projects/protobuf_c/transfer.c`),
+  11 alternating runs each, output identical in every case:
+
+  | workload | all 7 entries | 2 proven entries only |
+  |---|---|---|
+  | mixed values (the search's data, regenerated): reference | 1.264x, 11/11 | 1.119x, 10/11 |
+  | small numbers everywhere (branches predict well) | 1.095x, 11/11 | 1.027x, 11/11 |
+  | full-width numbers everywhere | 1.114x, 11/11 | 1.015x, 7/11 (noise) |
+  | another schema: every field type, strings, bytes, nesting, oneof | 1.207x, 11/11 | 1.099x, 11/11 |
+  | unpack (control: no replaced code runs) | 1.045x, 11/11 | 1.030x, 11/11 |
+
+  An A/A run (both builds plain, same harness) gives 1.000-1.004x, 7 of 11, so
+  the alternation has no order bias. Unpack calls none of the replaced
+  functions, yet comes out 3-4% faster: the rewritten functions are smaller and
+  everything after them in `protobuf-c.c` moves, so some of every number here
+  is code placement, which could go either way in another build. Read it as:
+  the gain transfers, roughly 1.1-1.2x on packing with all entries and a few
+  percent from the proven ones alone, of which ~3% may be layout. The varint
+  helpers (`uint64_size`) win most where value sizes are mixed and branches
+  mispredict.
