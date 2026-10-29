@@ -408,7 +408,10 @@ class _Unit:
             self.scope[d["id"]] = scope
             names = [n for n in map(_scope_name, scope) if n]
             if kind == "CXXRecordDecl" and d.get("completeDefinition"):
-                self._members(d, "::".join([*names, d.get("name", "")]))
+                # A nested class defined out of line (`class Block::Iter {`): its outer class.
+                parent = self.owner.get(d.get("previousDecl", ""))
+                q = self._qualified_member(parent, d.get("name", "")) if parent is not None else None
+                self._members(d, q or "::".join([*names, d.get("name", "")]))
             if (
                 kind in ("FunctionDecl", "CXXMethodDecl")
                 and _body(d)

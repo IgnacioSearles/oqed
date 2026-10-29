@@ -203,7 +203,13 @@ class ProjectOracle:
         entries = [e for e in self.entries if e.key != entry.key] + [entry]
         proc, applied = self._build(tree, entries)
         if proc.returncode != 0:
-            err = [ln for ln in (proc.stdout + proc.stderr).splitlines() if "error" in ln.lower()]
+            # The linker's own words (`undefined reference to ...`) say what went wrong;
+            # the driver's "linker command failed" doesn't.
+            err = [
+                ln
+                for ln in (proc.stdout + proc.stderr).splitlines()
+                if ("error" in ln.lower() or "undefined" in ln) and "linker command failed" not in ln
+            ]
             return Verdict(False, "does not build: " + " | ".join(err[:3])[:400], "inline")
         if entry.function not in applied:
             fn = f"{entry.function}:"

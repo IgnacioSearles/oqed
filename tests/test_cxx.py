@@ -26,6 +26,7 @@ struct Slice {
 };
 class Coder {
  public:
+  class Table;
   explicit Coder(uint32_t k) : k_(k) {}
   uint32_t mix(uint32_t x) const;
   bool has(uint32_t x) const { return ((x * 2654435761u) >> 7 & k_) != 0; }
@@ -42,6 +43,7 @@ inline int varlen(uint64_t v) {
 size_t total(const Slice& s, uint32_t extra);
 void put(std::string* dst, uint32_t v);
 uint32_t align(uint32_t x);
+uint32_t probe(uint32_t x);
 }  // namespace demo
 """
 LIB_CC = """#include "lib.h"
@@ -52,6 +54,11 @@ template <int N>
 constexpr uint32_t up(uint32_t x) { return (x + N - 1) & ~uint32_t(N - 1); }
 }  // namespace
 uint32_t align(uint32_t x) { return up<8>(x) ^ up<64>(x >> 3); }
+class Coder::Table {
+ public:
+  uint32_t lookup(uint32_t x) const { return ((x * 40503u) >> 20) ^ (x >> 3) ^ (x << 5) ^ (x >> 11); }
+};
+uint32_t probe(uint32_t x) { return Coder::Table().lookup(x); }
 uint32_t Coder::mix(uint32_t x) const { return rot(x ^ k_) * 0x9e3779b1u; }
 uint32_t hot(uint32_t x) {
   return x < 16 ? x * 3 : (x < 256 ? x * 5 + 1 : (x < 65536 ? x * 7 + 2 : x * 9 + 3));
@@ -76,7 +83,8 @@ int main(int argc, char** argv) {
   std::string out;
   demo::Slice s{"abc", 3};
   for (uint32_t i = 0; i < 20000000; i++) {
-    acc += demo::hot(i * 2654435761u >> (i & 31)) + c.mix(i) + c.has(i) + demo::hot(i, acc) + demo::align(i);
+    acc += demo::hot(i * 2654435761u >> (i & 31)) + c.mix(i) + c.has(i) + demo::hot(i, acc);
+    acc += demo::align(i) + demo::probe(i);
     lens += demo::varlen((uint64_t)i * i) + demo::total(s, i & 7);
     if ((i & 1023) == 0) out.clear();
     demo::put(&out, i);
@@ -162,7 +170,7 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     assert by["put"].time > 0.05  # sampled by mangled symbol
     # A method takes `this` and reads memory; a reference is a pointer.
     assert by["mix"].oracle == by["has"].oracle == by["put"].oracle == "project"
-    assert by["varlen"].oracle == "harness" and by["varlen"].location == "lib.h:21"
+    assert by["varlen"].oracle == "harness" and by["varlen"].location == "lib.h:22"
     mix = load_target(by["mix"].target)
     assert (mix.lang, mix.symbol, mix.qualified, mix.args, mix.ret) == (
         "c++", "_ZNK4demo5Coder3mixEj", "demo::Coder::mix", ["u64", "u32"], "u32"
@@ -173,6 +181,8 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     assert "__attribute__((used)) uint32_t Coder::mix" in src
     # A template helper comes whole (a call names its specialization).
     assert "template <int N>" in load_target(by["align"].target).c_source
+    # A nested class defined out of line is named by its outer class.
+    assert load_target(by["lookup"].target).qualified == "demo::Coder::Table::lookup"
     hot2 = load_target(by["hot.2"].target)
     assert hot2.args == ["u32", "u32"] and hot2.qualified == "demo::hot"
 
