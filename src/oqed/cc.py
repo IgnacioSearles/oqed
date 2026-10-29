@@ -455,6 +455,13 @@ def _is_clang(cc: str) -> bool:
     return "clang" in _run([cc, "--version"]).stdout
 
 
+def preprocessed_flags(cc: str, flags: list[str]) -> list[str]:
+    """The build's flags for compiling the preprocessed file instead of the
+    source: clang warns that the -I and -D flags go unused, which -Werror
+    (LevelDB builds with it) makes an error."""
+    return [*flags, "-Wno-unused-command-line-argument"] if _is_clang(cc) else flags
+
+
 def _build(cc: str, cmd: Command, ipath: Path, lang: str = "c") -> Build:
     return Build(ipath, gcc=not _is_clang(cc), intel="-masm=intel" in cmd.flags, lang=lang, flags=cmd.flags)
 
@@ -655,7 +662,7 @@ def _decide(
         p = work / f"{Path(src).stem}.{tag}{ipath.suffix}"
         chosen = [intel.get(s.entry.function, s) for s in chosen]
         p.write_bytes(rewrite(text, chosen) + wrappers)
-        return _compile_s(cc, cmd.flags, remark_flags, p)
+        return _compile_s(cc, preprocessed_flags(cc, cmd.flags), remark_flags, p)
 
     original = compile_variant("orig", [])
     rewritten = compile_variant("all", subs)
@@ -770,6 +777,8 @@ def _plan(cc: str, argv: list[str], work: Path) -> list[str]:
         sub_dir.mkdir()
         if (rewritten := process_source(cc, cmd, argv[i], entries, sub_dir)) is not None:
             out[i] = str(rewritten)
+    if out != argv and _is_clang(cc):
+        out.append("-Wno-unused-command-line-argument")
     return [cc, *out]
 
 

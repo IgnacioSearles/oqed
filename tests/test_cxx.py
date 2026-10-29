@@ -219,7 +219,7 @@ def test_oqed_cxx_substitutes_proves_and_guards_exceptions(cxx, cc):
         _entry(t["put"], PUT, "tested"),
     ]
     (root / "oqed.lock").write_text(lock.dumps(entries))
-    err = _build(root, cc=cc)
+    err = _build(root, "-I.", "-Werror", cc=cc)  # flags the preprocessed file leaves unused
     # varlen's C has a loop, so the proof can't decide; differential testing passes.
     assert "varlen: UNSAFE: substituted on testing only (proof unknown" in err, err
     assert "mix: UNSAFE: substituted on testing only" in err, err
