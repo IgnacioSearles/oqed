@@ -75,6 +75,31 @@ write-ups are in [sweep/](sweep/README.md).
 
 the long version, with what each project taught it: [docs/DETAILS.md](docs/DETAILS.md).
 
+## what we learned
+
+llms are decent at this, sometimes. not magic.
+
+- **the wins are where the compiler is stuck, not where it's dumb.** a branch
+  chain that should be one `lzcnt`, a `memcmp` call on 16-byte keys that
+  should be two 8-byte compares, a hash-chain walk whose next load could start
+  earlier. small, specific, and the model finds them fast.
+- **big functions mostly fail.** at 300+ instructions (zlib's `deflate_slow`,
+  libyaml's scanners) the model writes code that crashes or is subtly wrong,
+  and lz4's hot code is too big to even try. in the zlib run 85 of 101
+  candidates were rejected.
+- **so the checker is the product.** a `longest_match` that found shorter
+  matches made zlib 1.63x faster and the `.gz` 0.6% bigger; tests that only
+  check the round trip would have shipped it. same for measurement: two of
+  LevelDB's three "wins" and lz4's one didn't hold up when re-measured alone.
+- **it's the last few percent.** the right algorithm or data structure beats
+  any of this by a mile, and oqed can only touch the project's own code (a
+  third of LevelDB's time, a quarter of cJSON's; the rest is libc and malloc).
+  where it fits is mature hot code whose algorithm is already settled:
+  compressors, parsers, serializers. and several of the tricks could be
+  written back in C once you know them, so it's also a way to find out where
+  your compiler leaves time on the table.
+- **it's cheap.** $15.85 of model calls for 1.17x on zlib.
+
 ## run it
 
 needs linux x86-64, [uv](https://docs.astral.sh/uv/), rust, clang, gcc,
