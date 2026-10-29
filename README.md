@@ -6,7 +6,7 @@ oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C function, i
 
 Built for the Meta Global AI Developer Hackathon (Push the Frontier).
 
-> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. Pointed at a whole project with no functions picked, `oqed optimize` makes protobuf-c's size + pack workload 1.269× faster with clang (7 functions replaced, 2 of them proven; the proven ones alone give 1.171×), cJSON 1.072× and zlib 1.026×, with identical output in every case (`sweep/`). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
+> **Status: early development.** The model-guided search, sandboxed Rust harness, differential testing, SMT verifier, and the UI's result and search views (with replay) work end to end. Pointed at a whole project with no functions picked, `oqed optimize` makes protobuf-c's size + pack workload 1.269× faster with clang (7 functions replaced, 2 of them proven; the proven ones alone give 1.171×; on packing workloads the search never saw, 1.10–1.21×, of which a few percent is code layout), cJSON 1.072× and zlib 1.026×, with identical output in every case (`sweep/`). Timings so far come from a development laptop (WSL2) and are not publishable numbers.
 
 ## How it works
 
