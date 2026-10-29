@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
-from . import abi, fixup, harness, inline, lock, prompt
+from . import abi, fixup, harness, inline, lock, prompt, tricks
 from .baseline import compute as compute_baseline
 from .events import (
     RUNS_DIR,
@@ -104,6 +104,8 @@ class SearchConfig:
     seed: int = 0  # parent selection
     max_usd: float | None = None  # stop the run once model spend reaches this
     bench: Literal["inline", "call"] = "inline"  # how latency is measured (see module docstring)
+    tricks: int = 3  # verified wins on similar functions shown in each prompt (see `tricks`); 0: none
+    tricks_path: str | None = None  # the trick library (default: tricks.jsonl in the repo)
     march: str = DEFAULT_MARCH
     mcpu: str = DEFAULT_MCPU
 
@@ -264,9 +266,11 @@ class FunctionSearch:
     budget: Budget = field(default_factory=Budget)
     spent: float = 0.0  # this function's share
     oracle: ProjectOracle | None = None  # judges targets that touch memory (target.oracle == "project")
+    library: list = field(default_factory=list)  # the trick library
 
     def __post_init__(self) -> None:
         cfg = self.config
+        self.chosen = tricks.similar(self.target.c_source, self.target.function, self.library, cfg.tricks)
         self.failures: deque = deque(maxlen=max(cfg.failures_shown, cfg.reasoning_failures_shown))
         self.tried: deque[str] = deque(maxlen=cfg.tried_shown)
         self.rng = random.Random(f"{cfg.seed}:{self.target.name}")
@@ -320,17 +324,25 @@ class FunctionSearch:
             e = b.to_event()
             e.cycles = base if c == o.project.cc else None
             events[c] = e
-        self.emit(BaselineReady, source=t.c_source, signature=c_signature(t), **events)
+        self.emit(
+            BaselineReady, source=t.c_source, signature=c_signature(t), tricks=self._tricks_info(), **events
+        )
         note = PROJECT_NOTE.format(
             bench=o.project.bench or f"CPU time of `{o.project.run}`", unit=self.unit, base=base.median
         )
         if len(t.args) > len(inline.CONSTRAINT):
             note += MANY_ARGS_NOTE
-        self.context = prompt.target_context(
-            t,
-            [prompt.BaselineInfo(c, b.asm, b.mca.latency, b.mca.rthroughput, None) for c, b in bases.items()],
-            bases["clang"].mca.report,
-            note,
+        self.context = (
+            prompt.target_context(
+                t,
+                [
+                    prompt.BaselineInfo(c, b.asm, b.mca.latency, b.mca.rthroughput, None)
+                    for c, b in bases.items()
+                ],
+                bases["clang"].mca.report,
+                note,
+            )
+            + self._tricks_section()
         )
 
     async def setup(self) -> None:
@@ -359,16 +371,41 @@ class FunctionSearch:
             e = b.to_event()
             e.cycles = self.base_cycles[c]
             events[c] = e
-        self.emit(BaselineReady, source=t.c_source, signature=c_signature(t), **events)
-        self.context = prompt.target_context(
-            t,
-            [
-                prompt.BaselineInfo(c, b.asm, b.mca.latency, b.mca.rthroughput, self.base_cycles[c].median)
-                for c, b in bases.items()
-            ],
-            bases["clang"].mca.report,
-            LATENCY_NOTE[cfg.bench],
+        self.emit(
+            BaselineReady, source=t.c_source, signature=c_signature(t), tricks=self._tricks_info(), **events
         )
+        self.context = (
+            prompt.target_context(
+                t,
+                [
+                    prompt.BaselineInfo(
+                        c, b.asm, b.mca.latency, b.mca.rthroughput, self.base_cycles[c].median
+                    )
+                    for c, b in bases.items()
+                ],
+                bases["clang"].mca.report,
+                LATENCY_NOTE[cfg.bench],
+            )
+            + self._tricks_section()
+        )
+
+    def _tricks_section(self) -> str:
+        section = tricks.prompt_section(self.chosen)
+        return f"\n\n{section}" if section else ""
+
+    def _tricks_info(self) -> list[dict]:
+        return [
+            {
+                "id": t.id,
+                "function": t.function,
+                "project": t.project,
+                "explanation": t.explanation,
+                "status": t.status,
+                "speedup": t.speedup,
+                "similarity": round(score, 3),
+            }
+            for t, score in self.chosen
+        ]
 
     def _pool(self) -> list[_Member]:
         """Parents, fastest first. The incumbent is proven-first (it is what
@@ -855,6 +892,11 @@ async def run_search(
     summary: dict[str, FunctionSummary] = {}
     budget = Budget(config.max_usd)
     oracles: dict[str, ProjectOracle] = {}
+    library = (
+        tricks.load(Path(config.tricks_path) if config.tricks_path else tricks.LIBRARY)
+        if config.tricks
+        else []
+    )
     for t in targets:
         if t.oracle == "project" and t.project and t.project not in oracles:
             from .project import load as load_project
@@ -890,7 +932,16 @@ async def run_search(
                     return
                 oracle = oracles.get(t.project or "") if t.oracle == "project" else None
                 fs = FunctionSearch(
-                    t, volume, reasoning, config, log, bench_lock, verifier, budget=budget, oracle=oracle
+                    t,
+                    volume,
+                    reasoning,
+                    config,
+                    log,
+                    bench_lock,
+                    verifier,
+                    budget=budget,
+                    oracle=oracle,
+                    library=library,
                 )
                 await fs.setup()
                 await fs.run()

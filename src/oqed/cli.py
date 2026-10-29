@@ -150,6 +150,7 @@ def search(
     volume_effort: str = "low",
     reasoning_effort: str = "high",
     bench: str = typer.Option("inline", help="latency measurement: `inline` (asm in a loop) or `call`"),
+    tricks: int = typer.Option(3, help="verified wins on similar functions shown in each prompt (0: none)"),
 ):
     """Run the model-guided search on one or more targets."""
     import asyncio
@@ -166,6 +167,7 @@ def search(
         volume_effort=volume_effort,
         reasoning_effort=reasoning_effort,
         bench=bench,
+        tricks=tricks,
     )
     run_id = asyncio.run(
         run_search(
@@ -177,6 +179,24 @@ def search(
         )
     )
     typer.echo(f"run log: runs/{run_id}.jsonl")
+
+
+@app.command("tricks")
+def tricks_cmd(
+    runs: list[Path] = typer.Argument(None, help="run logs (default: runs/*.jsonl and runs/demo/*.jsonl)"),
+    out: Path = typer.Option(None, help="library file (default: tricks.jsonl in the repo)"),
+):
+    """Collect every verified win in the run logs into the trick library."""
+    from . import tricks
+    from .events import RUNS_DIR
+
+    paths = runs or sorted(RUNS_DIR.glob("*.jsonl")) + sorted((RUNS_DIR / "demo").glob("*.jsonl"))
+    lib = tricks.build(paths)
+    tricks.save(lib, out or tricks.LIBRARY)
+    for t in lib:
+        sp = f"{t.speedup:.2f}x" if t.speedup else "  -  "
+        typer.echo(f"  {sp:>6}  {t.status:7}  {t.project:12} {t.function:34} {t.explanation[:60]}")
+    typer.echo(f"{len(lib)} tricks in {out or tricks.LIBRARY}")
 
 
 @app.command("inline-bench")
@@ -344,6 +364,7 @@ def optimize(
         help="of each function's first 6 candidates, how many Muse Wonder writes (it also helps on stalls)",
     ),
     candidates: int = typer.Option(24, help="model calls per function, at most"),
+    tricks: int = typer.Option(3, help="verified wins on similar functions shown in each prompt (0: none)"),
 ):
     """Write winners to oqed.lock for oqed-cc. Given a project (a directory or
     a git URL) or nothing, optimizes that whole project: writes oqed.toml with
@@ -398,7 +419,9 @@ def optimize(
                 chosen,
                 get_provider("spark-contributor"),
                 get_provider("wonder"),
-                SearchConfig(max_usd=max_usd, first_wave_reasoning=wonder, candidates=candidates),
+                SearchConfig(
+                    max_usd=max_usd, first_wave_reasoning=wonder, candidates=candidates, tricks=tricks
+                ),
                 on_event=_print_event,
                 scanned=None if targets else scanned,
             )

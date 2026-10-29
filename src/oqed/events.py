@@ -51,6 +51,9 @@ class BaselineReady(_Event):
     clang: Baseline
     gcc: Baseline
     reference: Baseline | None = None
+    # Verified wins on similar functions shown in its prompt (the trick library):
+    # id, function, project, explanation, status, speedup, similarity.
+    tricks: list[dict] = []
 
 
 class CandidateProposed(_Event):
