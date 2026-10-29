@@ -202,6 +202,14 @@ class _Member:
     cycles: Cycles
     status: ProofStatus | None = None  # None for near misses
     report: str | None = None  # llvm-mca bottleneck analysis
+    # Project benchmark: speedup over the C build timed alongside it. Raw numbers
+    # from different moments aren't comparable (the whole program drifts).
+    paired: float | None = None
+
+    @property
+    def rank(self) -> float:
+        """Lower is better."""
+        return 1 / self.paired if self.paired else self.cycles.median
 
     def info(self) -> prompt.CandidateInfo:
         return prompt.CandidateInfo(self.asm, self.explanation, self.cycles.median, status=self.status)
@@ -837,7 +845,7 @@ class FunctionSearch:
         self.tried.append(f"{expl or '(no explanation)'} -> passes the tests, {cyc.median:.2f} {self.unit}")
         reason = "judged by the project's tests and benchmark; no proof for code that touches memory yet"
         self.emit(CandidateVerified, candidate_id=cid, status="tested_only", reason=reason)
-        self._accept(_Member(cid, asm, expl, cyc, "tested_only", report))
+        self._accept(_Member(cid, asm, expl, cyc, "tested_only", report, paired=speedup))
 
     def _accept(self, entry: _Member) -> None:
         """Add a correct, faster-than-C candidate to the population."""
@@ -849,14 +857,21 @@ class FunctionSearch:
         if (
             inc is None
             or (status == "proven" and inc.status != "proven")
-            or (status == inc.status and _faster(cyc, inc.cycles, 0.0))
+            or (
+                status == inc.status
+                and (
+                    entry.paired > inc.paired * 1.01
+                    if entry.paired and inc.paired
+                    else _faster(cyc, inc.cycles, 0.0)
+                )
+            )
         ):
             self.best.insert(0, entry)
             self.emit(NewBest, candidate_id=cid)
             self.stall = 0
             self.reasoning_since_best = 0
         else:
-            self.best[1:] = sorted([*self.best[1:], entry], key=lambda b: b.cycles.median)
+            self.best[1:] = sorted([*self.best[1:], entry], key=lambda b: b.rank)
             self.stall += 1
         del self.best[cfg.population :]
 
@@ -877,11 +892,17 @@ class FunctionSearch:
 
     def summary(self) -> FunctionSummary:
         b = self.best[0] if self.best else None
+
+        def vs(c: Compiler) -> float | None:
+            if b is None:
+                return None
+            return b.paired or round(self.base_cycles[c].median / b.cycles.median, 3)
+
         return FunctionSummary(
             best_candidate_id=b.candidate_id if b else None,
             status=b.status if b else None,
-            speedup_vs_clang=round(self.base_cycles["clang"].median / b.cycles.median, 3) if b else None,
-            speedup_vs_gcc=round(self.base_cycles["gcc"].median / b.cycles.median, 3) if b else None,
+            speedup_vs_clang=vs("clang"),
+            speedup_vs_gcc=vs("gcc"),
             candidates=self.proposed,
             cost_usd=round(self.spent, 4),
         )

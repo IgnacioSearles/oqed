@@ -395,14 +395,18 @@ def optimize(
         max_usd -= spent
 
     if from_run is None:
+        from . import project
         from .providers import get_provider
         from .search import SearchConfig, run_search
 
+        scanned = None
         if targets:
             chosen = [_target(n) for n in targets]
+            # In a project: the run belongs to it, as the last scan saw it.
+            if Path(project.CONFIG).is_file():
+                if (last := project.last_scan(project.load(Path(".")))) is not None:
+                    scanned = scan_summary(last, {t.name for t in chosen}, lock_path)
         else:
-            from . import project
-
             sc = project.scan(project.load(Path(".")))
             _print_scan(sc)
             locked = {e.function for e in lock.load(lock_path)} if lock_path.exists() else set()
@@ -423,7 +427,7 @@ def optimize(
                     max_usd=max_usd, first_wave_reasoning=wonder, candidates=candidates, tricks=tricks
                 ),
                 on_event=_print_event,
-                scanned=None if targets else scanned,
+                scanned=scanned,
             )
         )
     path = Path(from_run) if from_run.endswith(".jsonl") else RUNS_DIR / f"{from_run}.jsonl"

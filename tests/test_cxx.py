@@ -161,7 +161,10 @@ def cxx(tmp_path_factory):
         'build = "$CXX -O2 -march=x86-64-v3 -o app main.cc lib.cc"\nrun = "./app"\n'
     )
     p = project.load(root)
-    return p, {f.name: f for f in project.scan(p).functions}
+    sc = project.scan(p)
+    # Saved for `oqed optimize name ...`, which records the project from it.
+    assert project.last_scan(p) == sc
+    return p, {f.name: f for f in sc.functions}
 
 
 def test_scan_finds_namespaces_classes_overloads_and_references(cxx):

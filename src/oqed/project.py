@@ -924,5 +924,21 @@ def _toml(meta: dict) -> str:
     return "".join(f"{k} = {json.dumps(v)}\n" for k, v in meta.items())
 
 
+SCAN_FILE = "scan.json"
+
+
 def scan(project: Project) -> Scan:
-    return discover(project, record(project))
+    sc = discover(project, record(project))
+    # Kept so `oqed optimize name ...` can say which project its run belongs to.
+    rows = [{**vars(f), "target": str(f.target) if f.target else None} for f in sc.functions]
+    (project.root / ".oqed" / SCAN_FILE).write_text(json.dumps(rows) + "\n")
+    return sc
+
+
+def last_scan(project: Project) -> Scan | None:
+    """The most recent scan's results, if any."""
+    path = project.root / ".oqed" / SCAN_FILE
+    if not path.is_file():
+        return None
+    rows = json.loads(path.read_text())
+    return Scan([Function(**{**r, "target": Path(r["target"]) if r["target"] else None}) for r in rows])
