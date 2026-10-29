@@ -15,7 +15,11 @@ export function Leaderboard({
 }) {
   const rows = [...functions].sort((a, b) => (headlineSpeedup(b) ?? 0) - (headlineSpeedup(a) ?? 0));
   return (
-    <Panel title="Functions" right={`${functions.length}`}>
+    <Panel
+      title="Functions"
+      right={`${functions.length}`}
+      bodyClassName="max-h-[60vh] overflow-y-auto lg:max-h-[calc(100vh-20rem)]"
+    >
       <ul>
         {rows.map((fn) => {
           const s = headlineSpeedup(fn);
