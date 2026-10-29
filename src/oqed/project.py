@@ -781,6 +781,21 @@ def slice_sha(src: str, root: Path) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _parts(qualified: str) -> list[str]:
+    return [p for p in qualified.split("::") if p != "(anonymous namespace)"]
+
+
+def _short(qualified: str, everyone: list[str]) -> str:
+    """The fewest trailing parts of a qualified name (anonymous namespaces
+    left out) that no other function with a different qualified name ends in."""
+    parts = _parts(qualified)
+    others = [_parts(q) for q in everyone if q != qualified]
+    for n in range(1, len(parts) + 1):
+        if not any(o[-n:] == parts[-n:] for o in others):
+            return ".".join(parts[-n:])
+    return ".".join(parts)
+
+
 def discover(project: Project, rec: Path) -> Scan:
     time, own = read_times(rec / "profile.txt")
     targets_dir = project.state / "targets"
@@ -825,10 +840,11 @@ def discover(project: Project, rec: Path) -> Scan:
     scan = Scan()
     for unit, fnd, file, line, hashed, flags in seen.values():
         d, fn = fnd.decl, fnd.name
-        # Methods of the same name: the qualified name; overloads: with their
-        # number of arguments; then the file.
-        name = fn if names.count(fn) == 1 else fnd.qualified.replace("::", ".")
-        if name != fn and qualified.count(fnd.qualified) > 1:
+        # Methods of the same name: the shortest end of the qualified name that
+        # tells them apart (`Iter.Seek`); overloads: with their number of
+        # arguments; then the file.
+        name = fn if names.count(fn) == 1 else _short(fnd.qualified, qualified)
+        if qualified.count(fnd.qualified) > 1:
             name += f".{len([x for x in d.get('inner', []) if x.get('kind') == 'ParmVarDecl'])}"
         if name in taken:
             name = f"{name}.{file.stem}"

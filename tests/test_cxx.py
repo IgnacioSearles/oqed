@@ -149,8 +149,8 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     assert {
         "put",
         "varlen",
-        "demo.hot.1",
-        "demo.hot.2",
+        "hot.1",
+        "hot.2",
         "mix",
         "has",
         "total",
@@ -173,7 +173,7 @@ def test_scan_finds_namespaces_classes_overloads_and_references(cxx):
     assert "__attribute__((used)) uint32_t Coder::mix" in src
     # A template helper comes whole (a call names its specialization).
     assert "template <int N>" in load_target(by["align"].target).c_source
-    hot2 = load_target(by["demo.hot.2"].target)
+    hot2 = load_target(by["hot.2"].target)
     assert hot2.args == ["u32", "u32"] and hot2.qualified == "demo::hot"
 
 
@@ -255,7 +255,7 @@ HOT = """\tlea eax, [rdi+rdi*2]
 
 def test_search_on_a_cxx_function(cxx, tmp_path):
     _, by = cxx
-    t = load_target(by["demo.hot.1"].target)
+    t = load_target(by["hot.1"].target)
     mock = MockProvider([f"<explanation>three cmovs</explanation><asm>\n{HOT}</asm>"])
     cfg = SearchConfig(waves=False, candidates=1, concurrency=1, tricks=0)
     run_id = asyncio.run(run_search([t], mock, mock, cfg, runs_dir=tmp_path))
