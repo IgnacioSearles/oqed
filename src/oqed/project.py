@@ -447,9 +447,11 @@ class _Unit:
 
     def find(self, key: str) -> _Fn | None:
         """A definition by name (C), or by mangled symbol or qualified name (C++)."""
-        return next((f for f in self.functions if f.symbol == key and "::" not in key), None) or next(
-            (f for f in self.functions if key in (f.qualified, f.name) and f.qualified == key), None
-        ) or next((f for f in self.functions if f.name == key), None)
+        return (
+            next((f for f in self.functions if f.symbol == key and "::" not in key), None)
+            or next((f for f in self.functions if key in (f.qualified, f.name) and f.qualified == key), None)
+            or next((f for f in self.functions if f.name == key), None)
+        )
 
     def in_system(self, offset: int) -> bool:
         i = bisect.bisect_right(self._starts, offset) - 1
@@ -799,7 +801,91 @@ def _short(qualified: str, everyone: list[str]) -> str:
     return ".".join(parts)
 
 
+@dataclass
+class _Found:
+    """A project function as one compile unit sees it, worked out in a scan
+    worker: everything the target needs, without the unit's AST."""
+
+    file: Path
+    line: int
+    name: str
+    qualified: str
+    symbol: str
+    params: int
+    lang: str
+    flags: list[str]
+    skipped: str | None = None
+    sig: Signature | None = None
+    source: str = ""
+    loops: bool = False
+    slice_sha: str | None = None
+
+
+def _scan_unit(k: int, cmd: dict, src: str, work: Path, root: Path) -> list[_Found]:
+    """Preprocess one source of the build and describe each project function
+    defined in it (a worker process: the AST stays here)."""
+    ipath = work / f"{k}.{Path(src).stem}.i"
+    pre = subprocess.run(
+        [cmd["cc"], *cmd["flags"], "-E", src, "-o", str(ipath)],
+        cwd=cmd["cwd"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if pre.returncode != 0:
+        return []
+    unit = _Unit(ipath, Path(cmd["cwd"]), source_lang(src), cmd["flags"])
+    hashed = unit if "clang" in Path(cmd["cc"]).name else None
+    out: list[_Found] = []
+    seen: set[tuple[str, int, str]] = set()
+    for fn in unit.functions:
+        file, line = unit.origin(_offset(fn.decl))  # type: ignore[arg-type]
+        if root not in file.parents or (str(file), line, fn.qualified) in seen:
+            continue
+        seen.add((str(file), line, fn.qualified))
+        d = fn.decl
+        f = _Found(
+            file, line, fn.name, fn.qualified, fn.symbol,
+            len([x for x in d.get("inner", []) if x.get("kind") == "ParmVarDecl"]), unit.lang, cmd["flags"],
+        )  # fmt: skip
+        out.append(f)
+        if fn.name == "main":
+            f.skipped = "main"
+            continue
+        if file.relative_to(root).parts[0] == SUPPORT:
+            f.skipped = "oqed init's own driver (measures the project, not part of it)"
+            continue
+        sig = signature(unit, d, fn.method is not None)
+        if isinstance(sig, str):
+            f.skipped = sig
+            continue
+        try:
+            f.source, f.loops = slice_of(unit, fn, root)
+        except (KeyError, ValueError) as e:
+            f.skipped = f"could not slice the source: {e}"
+            continue
+        f.sig = sig
+        if hashed is None:
+            hashed = clang_unit(cmd["flags"], src, Path(cmd["cwd"]), work / f"{k}.{Path(src).stem}.clang.i")
+        f.slice_sha = source_sha(hashed, fn.symbol if unit.lang == "c++" else fn.name, root)
+    return out
+
+
+def _unit_workers() -> int:
+    """Scan workers: each holds a unit's AST (up to ~2 GB for a C++ file
+    with the STL), so as many as the free memory takes, up to the cores."""
+    try:
+        meminfo = Path("/proc/meminfo").read_text()
+        free_gb = int(re.search(r"MemAvailable:\s+(\d+)", meminfo).group(1)) / 2**20  # type: ignore[union-attr]
+    except (OSError, AttributeError):
+        free_gb = 4.0
+    return max(1, min(os.cpu_count() or 1, int(free_gb // 2)))
+
+
 def discover(project: Project, rec: Path) -> Scan:
+    import concurrent.futures as cf
+    import multiprocessing
+
     time, own = read_times(rec / "profile.txt")
     targets_dir = project.state / "targets"
     shutil.rmtree(targets_dir, ignore_errors=True)
@@ -808,47 +894,39 @@ def discover(project: Project, rec: Path) -> Scan:
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
 
-    seen: dict[tuple[str, int, str], tuple[_Unit, _Fn, Path, int, _Unit | None, list[str]]] = {}
     commands = [json.loads(ln) for ln in (rec / "commands.jsonl").read_text().splitlines() if ln.strip()]
-    for k, cmd in enumerate(commands):
-        if not Path(cmd["cwd"]).is_dir():
-            continue  # a configure check's scratch compile (CMake try_compile), since deleted
-        for src in cmd["sources"]:
-            if not Path(src).is_file():
-                continue
-            ipath = work / f"{k}.{Path(src).stem}.i"
-            pre = subprocess.run(
-                [cmd["cc"], *cmd["flags"], "-E", src, "-o", str(ipath)],
-                cwd=cmd["cwd"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if pre.returncode != 0:
-                continue
-            unit = _Unit(ipath, Path(cmd["cwd"]), source_lang(src), cmd["flags"])
-            hashed = unit if "clang" in Path(cmd["cc"]).name else None
-            for fn in unit.functions:
-                file, line = unit.origin(_offset(fn.decl))  # type: ignore[arg-type]
-                if project.root in file.parents and (str(file), line, fn.qualified) not in seen:
-                    if hashed is None:
-                        hashed = clang_unit(
-                            cmd["flags"], src, Path(cmd["cwd"]), work / f"{k}.{Path(src).stem}.clang.i"
-                        )
-                    seen[(str(file), line, fn.qualified)] = (unit, fn, file, line, hashed, cmd["flags"])
+    jobs = [
+        (k, cmd, src)
+        for k, cmd in enumerate(commands)
+        # A configure check's scratch compile (CMake try_compile) may be deleted since.
+        if Path(cmd["cwd"]).is_dir()
+        for src in cmd["sources"]
+        if Path(src).is_file()
+    ]
+    # Every source in parallel; merged in build order, so the first unit to
+    # define a function (in a header, many do) is the one it is taken from.
+    workers = min(_unit_workers(), max(len(jobs), 1))
+    with cf.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("forkserver")) as pool:
+        futures = [pool.submit(_scan_unit, k, c, s, work, project.root) for k, c, s in jobs]
+        per_unit = [fut.result() for fut in futures]
+    seen: dict[tuple[str, int, str], _Found] = {}
+    for found in per_unit:
+        for f in found:
+            seen.setdefault((str(f.file), f.line, f.qualified), f)
 
-    names = [fn.name for _, fn, _, _, _, _ in seen.values()]
-    qualified = [fn.qualified for _, fn, _, _, _, _ in seen.values()]
+    names = [f.name for f in seen.values()]
+    qualified = [f.qualified for f in seen.values()]
     taken: set[str] = set()
     scan = Scan()
-    for unit, fnd, file, line, hashed, flags in seen.values():
-        d, fn = fnd.decl, fnd.name
+    checks: list[tuple[Function, Path, dict, Signature]] = []
+    for fd in seen.values():
+        fn, file = fd.name, fd.file
         # Methods of the same name: the shortest end of the qualified name that
         # tells them apart (`Iter.Seek`); overloads: with their number of
         # arguments; then the file.
-        name = fn if names.count(fn) == 1 else _short(fnd.qualified, qualified)
-        if qualified.count(fnd.qualified) > 1:
-            name += f".{len([x for x in d.get('inner', []) if x.get('kind') == 'ParmVarDecl'])}"
+        name = fn if names.count(fn) == 1 else _short(fd.qualified, qualified)
+        if qualified.count(fd.qualified) > 1:
+            name += f".{fd.params}"
         if name in taken:
             name = f"{name}.{file.stem}"
         while name in taken:
@@ -857,51 +935,45 @@ def discover(project: Project, rec: Path) -> Scan:
         f = Function(
             name,
             fn,
-            f"{file.relative_to(project.root)}:{line}",
-            time.get(fnd.symbol, 0.0),
-            own.get(fnd.symbol, 0.0),
+            f"{file.relative_to(project.root)}:{fd.line}",
+            time.get(fd.symbol, 0.0),
+            own.get(fd.symbol, 0.0),
         )
         scan.functions.append(f)
-        if fn == "main":
-            f.skipped = "main"
+        if fd.skipped or fd.sig is None:
+            f.skipped = fd.skipped
             continue
-        if file.relative_to(project.root).parts[0] == SUPPORT:
-            f.skipped = "oqed init's own driver (measures the project, not part of it)"
-            continue
-        sig = signature(unit, d, fnd.method is not None)
-        if isinstance(sig, str):
-            f.skipped = sig
-            continue
-        try:
-            src, loops = slice_of(unit, fnd, project.root)
-        except (KeyError, ValueError) as e:
-            f.skipped = f"could not slice the source: {e}"
-            continue
-        cpp = unit.lang == "c++"
+        sig = fd.sig
+        cpp = fd.lang == "c++"
         tdir = targets_dir / name
         tdir.mkdir()
-        (tdir / ("func.cpp" if cpp else "func.c")).write_text(src)
+        (tdir / ("func.cpp" if cpp else "func.c")).write_text(fd.source)
         meta = {
             "function": fn,
             "category": "project",
             "args": sig.args,
             "ret": sig.ret,
-            "loop_free": not loops,
+            "loop_free": not fd.loops,
             "source": f.location,
             "license": "project",
             "project": str(project.root),
-            "slice_sha": source_sha(hashed, fnd.symbol if cpp else fn, project.root),
+            "slice_sha": fd.slice_sha,
         }
         if cpp:
-            meta |= {"lang": "c++", "symbol": fnd.symbol, "qualified": fnd.qualified}
-            if std := [a.split("=", 1)[1] for a in flags if a.startswith("-std=")][-1:]:
+            meta |= {"lang": "c++", "symbol": fd.symbol, "qualified": fd.qualified}
+            if std := [a.split("=", 1)[1] for a in fd.flags if a.startswith("-std=")][-1:]:
                 meta["std"] = std[0]
         if sig.ret_c:
             meta["ret_c"] = sig.ret_c
         if len(sig.args) > HARNESS_ARGS or sig.bools:
             meta["oracle"] = "project"  # the harness and inline blocks take 4 register arguments
         (tdir / "meta.toml").write_text(_toml(meta))
-        why, reads_globals = _check(load_target(tdir))
+        checks.append((f, tdir, meta, sig))
+
+    # Compiling each slice with both compilers: subprocesses, so threads.
+    with cf.ThreadPoolExecutor(os.cpu_count() or 1) as pool:
+        verdicts = list(pool.map(lambda c: _check(load_target(c[1])), checks))
+    for (f, tdir, meta, sig), (why, reads_globals) in zip(checks, verdicts, strict=True):
         if why is None and (sig.pointers or sig.ret_c or reads_globals):
             meta["oracle"] = "project"
             (tdir / "meta.toml").write_text(_toml(meta))
