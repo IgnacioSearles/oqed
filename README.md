@@ -107,6 +107,7 @@ binutils and `llvm-mca`.
 
 ```sh
 uv sync                    # also builds the rust harness
+uv run oqed doctor         # checks clang, gcc, binutils, llvm-mca; prints the install command for what's missing
 cp .env.example .env       # put your MODEL_API_KEY in
 ```
 

@@ -520,5 +520,27 @@ def scan_summary(sc, chosen: set[str], lock_path: Path) -> dict:
     }
 
 
+@app.command()
+def doctor():
+    """Check the programs oqed runs, and say how to install the missing ones."""
+    from . import doctor as d
+
+    gone = d.missing(required_only=False)
+    for t in d.TOOLS:
+        mark = "!!" if t in gone and t.required else "--" if t in gone else "ok"
+        print(f"{mark}  {t.name:<9} {t.why}{'' if t.required else ' (optional)'}")
+    if gone:
+        print(f"\n{d.install_hint(gone)}")
+    raise typer.Exit(1 if d.missing() else 0)
+
+
 def main() -> None:
+    import sys
+
+    from . import doctor
+
+    if (gone := doctor.missing()) and sys.argv[1:2] not in (["doctor"], ["--help"], []):
+        print("oqed needs these programs, and they aren't on your PATH:\n", file=sys.stderr)
+        print(doctor.report(gone), file=sys.stderr)
+        raise SystemExit(1)
     app()
