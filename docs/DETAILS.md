@@ -4,7 +4,7 @@ Everything the [README](../README.md) leaves out: how each part works, and what 
 
 oqed is an LLM-guided superoptimizer for x86-64. Given a small hot C or C++ function, it searches for assembly that runs faster than both `clang -O3` and `gcc -O3`, then formally proves the result equivalent to the original. Meta's Muse models generate candidate rewrites. A pipeline of increasingly strict checks decides which ones survive: assembly, differential testing, SMT equivalence, then benchmarking. Counterexamples from failed candidates go back to the model.
 
-Built for the Meta Global AI Developer Hackathon (Push the Frontier), where it won Best Agentic Use Case ([livestream](https://cerebralvalley.ai/e/meta-ai-developer-hackathon/live)).
+Built for the Meta Global AI Developer Hackathon (Push the Frontier), where it won Best Agentic Use Case, one of 15 prizes across ~5,700 submissions ([livestream](https://cerebralvalley.ai/e/meta-ai-developer-hackathon/live)).
 
 **Live UI with the curated runs: [ignaciosearles.github.io/oqed](https://ignaciosearles.github.io/oqed/)**
 
