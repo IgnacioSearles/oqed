@@ -10,7 +10,8 @@ assembly, throws away everything that isn't correct, and keeps what beats
 `clang -O3` and `gcc -O3`. then you build with `CC=oqed-cc` and that's it,
 your source doesn't change.
 
-built for the Meta Global AI Developer Hackathon (Push the Frontier).
+built for the Meta Global AI Developer Hackathon (Push the Frontier), where it
+won **Best Agentic Use Case**.
 
 **live UI with the real runs: [ignaciosearles.github.io/oqed](https://ignaciosearles.github.io/oqed/)**
 
