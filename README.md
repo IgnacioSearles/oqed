@@ -11,7 +11,7 @@ assembly, throws away everything that isn't correct, and keeps what beats
 your source doesn't change.
 
 built for the Meta Global AI Developer Hackathon (Push the Frontier), where it
-won **Best Agentic Use Case**, one of 14 prizes across 5,367 projects ([announcement](https://vimeo.com/1245287584), [livestream](https://cerebralvalley.ai/e/meta-ai-developer-hackathon/live)).
+won **Best Agentic Use Case**, one of 14 prizes across 5,367 projects ([announcement](https://vimeo.com/1245287584)).
 
 **live UI with the real runs: [ignaciosearles.github.io/oqed](https://ignaciosearles.github.io/oqed/)**
 
